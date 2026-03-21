@@ -434,6 +434,12 @@ export default function PlayPage() {
           </div>
         </div>
         <RoundTracker currentRound={currentRound} roundWins={roundWins} />
+        {leaderboard && (
+          <div className="w-full max-w-sm mt-4">
+            <p className="text-xs font-bold tracking-widest mb-2 text-center" style={{ color: '#C9A227' }}>— ترتيب اللاعبين —</p>
+            <Leaderboard data={leaderboard} />
+          </div>
+        )}
         {isHost && (
           <div className="flex flex-col gap-3 w-full max-w-sm mt-6">
             <button onClick={handleStartDaw} className="btn-primary">
@@ -572,7 +578,7 @@ export default function PlayPage() {
       {/* Round Over overlay */}
       {phase === 'ROUND_OVER' && (
         <div className="fixed inset-0 z-40 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)' }}>
-          <div className="card text-center max-w-sm w-full animate-fade-in" style={{ border: roundWinner === 'RED' ? '2px solid rgba(255,44,44,0.5)' : '2px solid rgba(0,200,83,0.5)' }}>
+          <div className="card text-center max-w-sm w-full animate-fade-in overflow-y-auto max-h-[90vh]" style={{ border: roundWinner === 'RED' ? '2px solid rgba(255,44,44,0.5)' : '2px solid rgba(0,200,83,0.5)' }}>
             <p
               className="text-xs font-bold tracking-widest mb-2"
               style={{ color: '#C9A227' }}
@@ -589,6 +595,12 @@ export default function PlayPage() {
               فاز {roundWinner === 'RED' ? 'الأحمر' : 'الأخضر'} بالجولة!
             </h2>
             <RoundTracker currentRound={currentRound} roundWins={roundWins} />
+            {leaderboard && (
+              <div className="mt-4">
+                <p className="text-xs font-bold tracking-widest mb-2" style={{ color: '#C9A227' }}>— ترتيب اللاعبين —</p>
+                <Leaderboard data={leaderboard} />
+              </div>
+            )}
             {isHost && (
               <button onClick={handleNextRound} className="btn-primary mt-4">
                 ▷ الجولة التالية
