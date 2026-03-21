@@ -814,7 +814,8 @@ export function initGameEngine(io: Server) {
           }
         }
         const session = await prisma.gameSession.findUnique({ where: { code: roomCode }, include: { players: { where: { isConnected: true }, orderBy: { joinOrder: 'asc' } } } });
-        if (session?.hostId === playerId && session.players.length > 0) {
+        // لا تنقل لقب المقدم في مرحلة الانتظار — يسترجعه عند عودته بنفس playerId
+        if (session?.hostId === playerId && session.status !== 'WAITING' && session.players.length > 0) {
           const newHost = session.players[0];
           await prisma.gameSession.update({ where: { id: session.id }, data: { hostId: newHost.id } });
           if (game) game.hostPlayerId = newHost.id;
