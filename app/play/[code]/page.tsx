@@ -116,6 +116,14 @@ export default function PlayPage() {
     const saved = localStorage.getItem('huroof_sound');
     setSoundEnabled(saved !== '0');
 
+    // Re-join on socket reconnect (clears socket.data.playerId on server)
+    const rejoin = () => {
+      const latestId = localStorage.getItem('playerId') ?? savedId;
+      const latestName = localStorage.getItem('playerName') ?? name;
+      socket.emit('join_room', { roomCode: code, playerName: latestName, savedPlayerId: latestId });
+    };
+    socket.on('connect', rejoin);
+
     // Helper to reset question state
     const clearQuestion = () => {
       setQuestion(null);
@@ -137,6 +145,9 @@ export default function PlayPage() {
       setIsHost(data.isHost);
       const me = data.players?.find((p: any) => p.id === data.playerId);
       setMyTeam(me?.team ?? null);
+      if (data.players) {
+        setPlayers(data.players.map((p: any) => ({ ...p, status: p.status ?? 'active' })));
+      }
       if (data.gameStatus !== 'PLAYING') {
         router.replace(`/room/${code}`);
       }
@@ -430,6 +441,7 @@ export default function PlayPage() {
 
     // --- CLEANUP ---
     return () => {
+      socket.off('connect', rejoin);
       const events = [
         'room_joined', 'grid_sync', 'game_start', 'cell_selected',
         'buzzer_started', 'cell_is_golden', 'buzz_confirmed', 'answer_wrong_team',

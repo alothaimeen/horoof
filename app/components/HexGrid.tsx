@@ -155,16 +155,16 @@ export function HexGrid({
         <defs>
           {/* Gradients for game cells */}
           <radialGradient id="hexNeutralGrad" cx="40%" cy="30%" r="65%">
-            <stop offset="0%" stopColor="#2a3f6f" />
-            <stop offset="100%" stopColor="#0b1225" />
+            <stop offset="0%" stopColor="#F5E8C0" />
+            <stop offset="100%" stopColor="#D4C075" />
           </radialGradient>
           <radialGradient id="hexRedGrad" cx="35%" cy="25%" r="70%">
-            <stop offset="0%" stopColor="#ff5555" />
-            <stop offset="100%" stopColor="#8b0000" />
+            <stop offset="0%" stopColor="#EE4444" />
+            <stop offset="100%" stopColor="#991111" />
           </radialGradient>
           <radialGradient id="hexGreenGrad" cx="35%" cy="25%" r="70%">
-            <stop offset="0%" stopColor="#00e676" />
-            <stop offset="100%" stopColor="#004d20" />
+            <stop offset="0%" stopColor="#228B44" />
+            <stop offset="100%" stopColor="#0D5520" />
           </radialGradient>
           <radialGradient id="hexGoldGrad" cx="35%" cy="25%" r="70%">
             <stop offset="0%" stopColor="#FFE66D" />
@@ -172,12 +172,12 @@ export function HexGrid({
           </radialGradient>
           {/* Gradients for border cells */}
           <radialGradient id="hexBorderRedGrad" cx="35%" cy="25%" r="70%">
-            <stop offset="0%" stopColor="#ff3333" />
-            <stop offset="100%" stopColor="#7a0000" />
+            <stop offset="0%" stopColor="#EE3333" />
+            <stop offset="100%" stopColor="#880000" />
           </radialGradient>
           <radialGradient id="hexBorderGreenGrad" cx="35%" cy="25%" r="70%">
-            <stop offset="0%" stopColor="#00c853" />
-            <stop offset="100%" stopColor="#00401a" />
+            <stop offset="0%" stopColor="#229933" />
+            <stop offset="100%" stopColor="#0D6620" />
           </radialGradient>
           {/* Neon glow filters */}
           <filter id="glowRed" x="-30%" y="-30%" width="160%" height="160%">
@@ -197,36 +197,36 @@ export function HexGrid({
         {Array.from({ length: GRID_ROWS }, (_, row) => {
           const { x, y } = getCtr(-1, row);
           return <polygon key={`rbl-${row}`} points={getHexPts(x, y, hexSize)}
-            fill="url(#hexBorderRedGrad)" stroke="#550000" strokeWidth={0.8} opacity={0.85} />;
+            fill="url(#hexBorderRedGrad)" stroke="#660000" strokeWidth={1} opacity={1} />;
         })}
 
         {/* RED border — right column (col=GRID_COLS) */}
         {Array.from({ length: GRID_ROWS }, (_, row) => {
           const { x, y } = getCtr(GRID_COLS, row);
           return <polygon key={`rbr-${row}`} points={getHexPts(x, y, hexSize)}
-            fill="url(#hexBorderRedGrad)" stroke="#550000" strokeWidth={0.8} opacity={0.85} />;
+            fill="url(#hexBorderRedGrad)" stroke="#660000" strokeWidth={1} opacity={1} />;
         })}
 
         {/* GREEN border — top row (row=-1) */}
         {Array.from({ length: GRID_COLS }, (_, col) => {
           const { x, y } = getCtr(col, -1);
           return <polygon key={`gbt-${col}`} points={getHexPts(x, y, hexSize)}
-            fill="url(#hexBorderGreenGrad)" stroke="#004400" strokeWidth={0.8} opacity={0.85} />;
+            fill="url(#hexBorderGreenGrad)" stroke="#0a4a18" strokeWidth={1} opacity={1} />;
         })}
 
         {/* GREEN border — bottom row (row=GRID_ROWS) */}
         {Array.from({ length: GRID_COLS }, (_, col) => {
           const { x, y } = getCtr(col, GRID_ROWS);
           return <polygon key={`gbb-${col}`} points={getHexPts(x, y, hexSize)}
-            fill="url(#hexBorderGreenGrad)" stroke="#004400" strokeWidth={0.8} opacity={0.85} />;
+            fill="url(#hexBorderGreenGrad)" stroke="#0a4a18" strokeWidth={1} opacity={1} />;
         })}
 
-        {/* Corner fill cells (dark neutral) */}
+        {/* Corner fill cells (beige neutral to match board) */}
         {([-1, GRID_COLS] as number[]).map(col =>
           ([-1, GRID_ROWS] as number[]).map(row => {
             const { x, y } = getCtr(col, row);
             return <polygon key={`corner-${col}-${row}`} points={getHexPts(x, y, hexSize)}
-              fill="#08111f" stroke="#1a2540" strokeWidth={0.8} />;
+              fill="#C4AA60" stroke="#A89040" strokeWidth={0.8} />;
           })
         )}
 

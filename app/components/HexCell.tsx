@@ -51,9 +51,9 @@ function getGradientFill(
 function getStroke(owner: TeamColor | null, isSelected: boolean, isWinPath: boolean): string {
   if (isWinPath) return '#FFD700';
   if (isSelected) return '#C9A227';
-  if (owner === 'RED') return '#FF6666';
-  if (owner === 'GREEN') return '#00FF88';
-  return '#263550';
+  if (owner === 'RED') return '#CC2222';
+  if (owner === 'GREEN') return '#117733';
+  return '#B0994A';
 }
 
 function getSvgFilter(
@@ -154,7 +154,7 @@ export const HexCell = memo(function HexCell({
       <polygon
         points={highlightPts}
         fill="white"
-        opacity={cell.owner || isWinPath || isGolden ? 0.18 : 0.08}
+        opacity={cell.owner || isWinPath || isGolden ? 0.22 : 0.30}
         style={{ pointerEvents: 'none' }}
       />
       {/* Hover overlay */}
@@ -174,7 +174,7 @@ export const HexCell = memo(function HexCell({
         fontSize={fontSize}
         fontFamily="'Cairo', 'Segoe UI', sans-serif"
         fontWeight="700"
-        fill={cell.owner || isWinPath || isGolden ? '#FFFFFF' : '#7A90B8'}
+        fill={cell.owner || isWinPath || isGolden ? '#FFFFFF' : '#3D2400'}
         style={{ userSelect: 'none', pointerEvents: 'none' }}
       >
         {cell.letter}

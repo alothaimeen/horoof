@@ -48,6 +48,16 @@ export default function RoomPage() {
     const savedPlayerId = localStorage.getItem('playerId') ?? undefined;
     const playerName = localStorage.getItem('playerName') ?? `لاعب ${Math.floor(Math.random() * 100)}`;
 
+    // Re-join on socket reconnect (server loses socket.data.playerId on disconnect)
+    const rejoin = () => {
+      socket.emit('join_room', {
+        roomCode: code,
+        playerName: localStorage.getItem('playerName') ?? playerName,
+        savedPlayerId: localStorage.getItem('playerId') ?? savedPlayerId,
+      });
+    };
+    socket.on('connect', rejoin);
+
     socket.on('room_joined', ({ playerId: pid, isHost: h, players: p, gameStatus }: {
       playerId: string; isHost: boolean; players: PlayerInfo[]; gameStatus: string;
     }) => {
@@ -88,6 +98,7 @@ export default function RoomPage() {
     socket.emit('join_room', { roomCode: code, playerName, savedPlayerId });
 
     return () => {
+      socket.off('connect', rejoin);
       socket.off('room_joined');
       socket.off('player_update');
       socket.off('teams_updated');
