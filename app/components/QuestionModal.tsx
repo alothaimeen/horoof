@@ -71,6 +71,9 @@ export function QuestionModal({
   const isOpenPhase = phase === 'BUZZER_OPEN';
   const isRevealPhase = correctIndex !== null;
 
+  // For option visibility: in buzzer phase show gradually, but always show all when answering
+  const effectiveRevealedCount = isAnsweringPhase ? options.length : revealedCount;
+
   const teamColor = (team: TeamColor) => team === 'RED' ? '#FF4444' : '#00FF7F';
   const teamLabel = (team: TeamColor) => team === 'RED' ? '🔴 الفريق الأحمر' : '🟢 الفريق الأخضر';
 
@@ -91,52 +94,31 @@ export function QuestionModal({
 
   // ── Gradual option reveal + buzzer countdown (BUZZER / TIEBREAKER) ──
   useEffect(() => {
-    if (!isBuzzerPhase) {
-      setRevealedCount(0);
+    if (!isBuzzerPhase || !optionRevealTime) {
+      if (!isBuzzerPhase) setRevealedCount(options.length);
       setBuzzerCanBuzz(false);
       setBuzzerCountdown(30);
       return;
     }
 
-    // If no timing provided yet, show nothing
-    if (!optionRevealTime) {
-      setRevealedCount(0);
-      setBuzzerCanBuzz(false);
-      return;
-    }
-
-    let animFrame: number;
-    const REVEAL_PER_OPT_MS = 1000;
-
-    const tick = () => {
+    const update = () => {
       const now = Date.now();
-
-      // How many options have been revealed
       const elapsed = now - optionRevealTime;
-      const count = Math.min(options.length, elapsed < 0 ? 0 : Math.floor(elapsed / REVEAL_PER_OPT_MS) + 1);
+      const count = elapsed < 0 ? 0 : Math.min(options.length, Math.floor(elapsed / 1000) + 1);
       setRevealedCount(count);
 
-      // Buzzer open countdown
       if (buzzerOpenTime && now >= buzzerOpenTime) {
         setBuzzerCanBuzz(true);
-        const remaining = Math.max(0, Math.ceil((buzzerOpenTime + 30000 - now) / 1000));
-        setBuzzerCountdown(remaining);
+        setBuzzerCountdown(Math.max(0, Math.ceil((buzzerOpenTime + 30000 - now) / 1000)));
       } else {
         setBuzzerCanBuzz(false);
       }
-
-      animFrame = requestAnimationFrame(tick);
     };
-    animFrame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animFrame);
-  }, [isBuzzerPhase, optionRevealTime, buzzerOpenTime, options.length]);
 
-  // Reset when phase changes away
-  useEffect(() => {
-    if (!isBuzzerPhase) {
-      setRevealedCount(options.length); // show all options in answering phases
-    }
-  }, [isBuzzerPhase, options.length]);
+    update(); // run immediately on mount/dependency change
+    const interval = setInterval(update, 200);
+    return () => clearInterval(interval);
+  }, [isBuzzerPhase, optionRevealTime, buzzerOpenTime, options.length]);
 
   const borderColor = currentTeam === 'RED' ? 'rgba(255,68,68,0.5)' : 'rgba(0,255,127,0.5)';
   const glowColor = currentTeam === 'RED' ? 'rgba(255,44,44,0.2)' : 'rgba(0,255,127,0.2)';
@@ -222,8 +204,8 @@ export function QuestionModal({
         {/* Options */}
         <div className="flex flex-col gap-2">
           {options.map((opt, i) => {
-            // In buzzer/tiebreaker phase, reveal options gradually
-            const isVisible = isBuzzerPhase ? i < revealedCount : true;
+            // In buzzer/tiebreaker phase, reveal options gradually (but show all when answering)
+            const isVisible = isBuzzerPhase ? i < effectiveRevealedCount : true;
 
             if (!isVisible) {
               return (
