@@ -20,26 +20,44 @@ function getHexPoints(cx: number, cy: number, size: number): string {
   }).join(' ');
 }
 
-function getFill(
+// Upper highlight: top-cap polygon (indices 4, 5, 0) at reduced size
+// gives the 3D "light reflection" illusion on the upper portion of the hex
+function getTopHighlightPts(cx: number, cy: number, size: number): string {
+  return [4, 5, 0].map(i => {
+    const angle = (Math.PI / 3) * i - Math.PI / 6;
+    return `${cx + size * 0.62 * Math.cos(angle)},${cy + size * 0.62 * Math.sin(angle) - size * 0.08}`;
+  }).join(' ');
+}
+
+function getGradientFill(
   owner: TeamColor | null,
   isSelected: boolean,
   isWinPath: boolean,
   answerLocked: boolean
 ): string {
-  if (isWinPath) return '#C9A227';        // ذهبي — مسار الفوز
-  if (isSelected) return '#8B6914';       // ذهبي داكن — خلية محددة
-  if (answerLocked) return '#FFD700';     // ذهبي ساطع — لحظة الإجابة
-  if (owner === 'RED') return '#CC2020';  // أحمر نيون
-  if (owner === 'GREEN') return '#008A3C';// أخضر نيون
-  return '#0E1526';                        // كحلي داكن — محايد
+  if (isWinPath || answerLocked) return 'url(#hexGoldGrad)';
+  if (isSelected) return 'url(#hexGoldGrad)';
+  if (owner === 'RED') return 'url(#hexRedGrad)';
+  if (owner === 'GREEN') return 'url(#hexGreenGrad)';
+  return 'url(#hexNeutralGrad)';
 }
 
 function getStroke(owner: TeamColor | null, isSelected: boolean, isWinPath: boolean): string {
   if (isWinPath) return '#FFD700';
   if (isSelected) return '#C9A227';
-  if (owner === 'RED') return '#FF4444';
-  if (owner === 'GREEN') return '#00FF7F';
-  return '#1E2A40';
+  if (owner === 'RED') return '#FF6666';
+  if (owner === 'GREEN') return '#00FF88';
+  return '#263550';
+}
+
+function getSvgFilter(
+  owner: TeamColor | null,
+  isWinPath: boolean
+): string | undefined {
+  if (isWinPath) return 'url(#glowGold)';
+  if (owner === 'RED') return 'url(#glowRed)';
+  if (owner === 'GREEN') return 'url(#glowGreen)';
+  return undefined;
 }
 
 // React.memo with custom comparison — only re-render when visible state changes
@@ -55,35 +73,44 @@ export const HexCell = memo(function HexCell({
   onClick,
 }: HexCellProps) {
   const points = getHexPoints(cx, cy, size);
-  const fill = getFill(cell.owner, isSelected, isWinPath, answerLocked);
+  const highlightPts = getTopHighlightPts(cx, cy, size);
+  const fill = getGradientFill(cell.owner, isSelected, isWinPath, answerLocked);
   const stroke = getStroke(cell.owner, isSelected, isWinPath);
+  const svgFilter = getSvgFilter(cell.owner, isWinPath);
   const fontSize = Math.max(8, size * 0.44);
-
-  // نيون جلو للخلايا المملوكة
-  const glowFilter = cell.owner === 'RED'
-    ? 'drop-shadow(0 0 3px rgba(255,44,44,0.6))'
-    : cell.owner === 'GREEN'
-    ? 'drop-shadow(0 0 3px rgba(0,255,127,0.6))'
-    : isWinPath
-    ? 'drop-shadow(0 0 4px rgba(201,162,39,0.8))'
-    : undefined;
 
   return (
     <g
       style={{ cursor: isHoverable ? 'pointer' : 'default' }}
       onClick={onClick}
+      filter={svgFilter}
     >
+      {/* Main hex polygon with gradient fill */}
       <polygon
         points={points}
         fill={fill}
         stroke={stroke}
         strokeWidth={isSelected || isWinPath ? 2 : cell.owner ? 1.5 : 1}
-        opacity={isHoverable && !isSelected ? 1 : cell.owner ? 1 : 0.88}
-        style={{
-          transition: 'fill 0.2s ease, opacity 0.2s ease',
-          filter: glowFilter,
-        }}
+        opacity={isHoverable && !isSelected ? 1 : cell.owner ? 1 : 0.9}
+        style={{ transition: 'fill 0.2s ease, opacity 0.2s ease' }}
       />
+      {/* Inner highlight — top cap for 3D light reflection */}
+      <polygon
+        points={highlightPts}
+        fill="white"
+        opacity={cell.owner || isWinPath ? 0.18 : 0.08}
+        style={{ pointerEvents: 'none' }}
+      />
+      {/* Hover overlay */}
+      {isHoverable && !isSelected && (
+        <polygon
+          points={points}
+          fill="white"
+          opacity={0.07}
+          style={{ transition: 'opacity 0.15s', pointerEvents: 'none' }}
+        />
+      )}
+      {/* Letter label */}
       <text
         x={cx}
         y={cy + fontSize * 0.35}
@@ -91,19 +118,11 @@ export const HexCell = memo(function HexCell({
         fontSize={fontSize}
         fontFamily="'Cairo', 'Segoe UI', sans-serif"
         fontWeight="700"
-        fill={cell.owner ? '#FFFFFF' : '#8A9CC0'}
+        fill={cell.owner || isWinPath ? '#FFFFFF' : '#7A90B8'}
         style={{ userSelect: 'none', pointerEvents: 'none' }}
       >
         {cell.letter}
       </text>
-      {isHoverable && !isSelected && (
-        <polygon
-          points={points}
-          fill="white"
-          opacity={0.06}
-          style={{ transition: 'opacity 0.15s' }}
-        />
-      )}
     </g>
   );
 }, (prev, next) =>

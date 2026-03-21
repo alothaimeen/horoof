@@ -1,6 +1,6 @@
-export const GRID_COLS = 11;
-export const GRID_ROWS = 11;
-export const TOTAL_CELLS = GRID_COLS * GRID_ROWS; // 121
+export const GRID_COLS = 5;
+export const GRID_ROWS = 5;
+export const TOTAL_CELLS = GRID_COLS * GRID_ROWS; // 25
 
 export type TeamColor = 'RED' | 'GREEN';
 
@@ -17,18 +17,19 @@ export interface HexCell {
 // Send to client via: [...grid.values()] → HexCell[]
 // Client stores HexCell[], not Map.
 
+// Positive modulo helper (handles negative col values)
+function posMod(a: number, b: number): number {
+  return ((a % b) + b) % b;
+}
+
 export function cellKey(col: number, row: number): string {
   return `${col}-${row}`;
 }
 
-// The 6 directions for Hex game (parallelogram grid)
-// RED wins: col=0 → col=10 (left-to-right)
-// GREEN wins: row=0 → row=10 (top-to-bottom)
-const HEX_DIRECTIONS: Array<[number, number]> = [
-  [-1, 0], [1, 0],   // horizontal neighbors
-  [0, -1], [0, 1],   // vertical neighbors
-  [1, -1], [-1, 1],  // diagonal neighbors
-];
+// Odd-Q vertical offset neighbors:
+// RED wins: col=0 → col=4 (left-to-right)
+// GREEN wins: row=0 → row=4 (top-to-bottom)
+// Odd columns (1, 3) are shifted DOWN by half a cell.
 
 // Permanent cache — computed once per (col,row) position, never changes
 const NEIGHBORS_CACHE = new Map<string, Array<[number, number]>>();
@@ -38,14 +39,14 @@ export function getNeighborCoords(col: number, row: number): Array<[number, numb
   const cached = NEIGHBORS_CACHE.get(key);
   if (cached) return cached;
 
-  const neighbors: Array<[number, number]> = [];
-  for (const [dc, dr] of HEX_DIRECTIONS) {
-    const nc = col + dc;
-    const nr = row + dr;
-    if (nc >= 0 && nc < GRID_COLS && nr >= 0 && nr < GRID_ROWS) {
-      neighbors.push([nc, nr]);
-    }
-  }
+  // Odd-Q offset: odd columns are shifted down, even columns are not
+  const dirs: Array<[number, number]> = col % 2 === 0
+    ? [[ 0,-1],[ 0, 1],[-1,-1],[-1, 0],[ 1,-1],[ 1, 0]]
+    : [[ 0,-1],[ 0, 1],[-1, 0],[-1, 1],[ 1, 0],[ 1, 1]];
+
+  const neighbors = dirs
+    .map(([dc, dr]) => [col + dc, row + dr] as [number, number])
+    .filter(([nc, nr]) => nc >= 0 && nc < GRID_COLS && nr >= 0 && nr < GRID_ROWS);
 
   NEIGHBORS_CACHE.set(key, neighbors);
   return neighbors;
@@ -58,8 +59,8 @@ export function getNeighbors(col: number, row: number, grid: Map<string, HexCell
 }
 
 /**
- * Distribute `letters` evenly across 121 cells.
- * baseCount = floor(121 / numLetters), first `remainder` letters get +1.
+ * Distribute `letters` evenly across 25 cells.
+ * baseCount = floor(25 / numLetters), first `remainder` letters get +1.
  * Returns a new grid with all cells unowned.
  */
 export function initGrid(letters: string[]): Map<string, HexCell> {
@@ -102,8 +103,8 @@ export function initGrid(letters: string[]): Map<string, HexCell> {
 
 /**
  * BFS win detection.
- * RED: must connect col=0 edge → col=10 edge
- * GREEN: must connect row=0 edge → row=10 edge
+ * RED: must connect col=0 edge → col=4 edge
+ * GREEN: must connect row=0 edge → row=4 edge
  * Uses pointer (head++) instead of shift() to keep BFS at O(n) not O(n²).
  */
 export function checkWin(grid: Map<string, HexCell>, team: TeamColor): boolean {
@@ -202,7 +203,7 @@ export function getWinningPath(grid: Map<string, HexCell>, team: TeamColor): str
 }
 
 /**
- * Pre-warms the neighbors cache for all 121 cells.
+ * Pre-warms the neighbors cache for all 25 cells.
  * Call once at server startup (inside gameEngine init) for zero-latency first game.
  */
 export function preWarmNeighborsCache(): void {

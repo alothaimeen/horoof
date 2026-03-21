@@ -302,6 +302,41 @@ body {
   50%       { filter: drop-shadow(0 0 40px rgba(255, 215, 0, 1)); }
 }
 
+/* ─── زر السرعة (Buzzer) ─── */
+.btn-buzzer {
+  width: 100%;
+  padding: 1.1rem 1.5rem;
+  border-radius: 1rem;
+  font-size: 1.4rem;
+  font-weight: 900;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  animation: buzzerPulse 1.2s ease-in-out infinite;
+  transition: all 0.15s ease;
+}
+
+.btn-buzzer:active {
+  transform: scale(0.96);
+  animation: none;
+}
+
+.btn-buzzer:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  animation: none;
+}
+
+@keyframes buzzerPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 18px currentColor, 0 4px 0 rgba(0,0,0,0.5);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 35px currentColor, 0 6px 0 rgba(0,0,0,0.5);
+  }
+}
+
 
 /* أزرار الخيارات */
 .option-btn {

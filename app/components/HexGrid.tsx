@@ -7,6 +7,8 @@ import { cellKey, GRID_COLS, GRID_ROWS } from '../../lib/hexUtils';
 
 type GamePhase =
   | 'CELL_SELECTION'
+  | 'BUZZER'
+  | 'BUZZER_SECOND_CHANCE'
   | 'ANSWERING'
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
@@ -25,11 +27,28 @@ interface HexGridProps {
   onCellClick?: (col: number, row: number) => void;
 }
 
-// Converts (col,row) → pixel center using flat-top hex layout
+// Converts (col,row) → pixel center using Odd-Q vertical hex layout with optional offset
 function getHexCenter(col: number, row: number, size: number) {
   const x = size * 1.5 * col + size;
   const y = size * Math.sqrt(3) * (row + (col % 2) * 0.5) + size;
   return { x, y };
+}
+
+// Safe version that handles negative col (for border cells)
+function getHexCenterSafe(col: number, row: number, size: number, xOff: number, yOff: number) {
+  const colMod = ((col % 2) + 2) % 2; // positive modulo to handle negative col
+  return {
+    x: size * 1.5 * col + size + xOff,
+    y: size * Math.sqrt(3) * (row + colMod * 0.5) + size + yOff,
+  };
+}
+
+// Build hex polygon points string from center and radius
+function getHexPts(cx: number, cy: number, size: number): string {
+  return Array.from({ length: 6 }, (_, i) => {
+    const angle = (Math.PI / 3) * i - Math.PI / 6;
+    return `${cx + size * Math.cos(angle)},${cy + size * Math.sin(angle)}`;
+  }).join(' ');
 }
 
 // Build a Map for O(1) cell lookup
@@ -58,9 +77,9 @@ export function HexGrid({
     const update = () => {
       if (!containerRef.current) return;
       const w = containerRef.current.clientWidth;
-      // 11 cols × 1.5 × size + size = 17.5 × size + padding (32px)
-      const computed = (w - 32) / 17.5;
-      setHexSize(Math.min(35, Math.max(14, computed)));
+      // 5 cols × 1.5 × size + 0.5*size (for right border) + 2*size (xOff) + hexSize = 12*size approx
+      const computed = (w - 32) / 12;
+      setHexSize(Math.min(40, Math.max(18, computed)));
     };
     update();
     const ro = new ResizeObserver(update);
@@ -72,9 +91,16 @@ export function HexGrid({
   const winPathSet = new Set(winningPath ?? []);
   const isMyTurn = !isHost && myTeam === currentTeam && phase === 'CELL_SELECTION';
 
-  // Compute SVG dimensions
-  const maxX = getHexCenter(GRID_COLS - 1, GRID_ROWS - 1, hexSize).x + hexSize + 4;
-  const maxY = getHexCenter(0, GRID_ROWS - 1, hexSize).y + hexSize * 0.9 + 4;
+  // Offset to accommodate border hex cells at col=-1 and row=-1
+  const xOff = hexSize * 2;
+  const yOff = hexSize * 2;
+
+  // Helper: get center of any cell (including border cells outside grid bounds)
+  const getCtr = (col: number, row: number) => getHexCenterSafe(col, row, hexSize, xOff, yOff);
+
+  // SVG dimensions: accommodate right border (col=GRID_COLS, odd) and bottom border (row=GRID_ROWS, odd col)
+  const svgW = hexSize * 11.5 + 8;
+  const svgH = hexSize * Math.sqrt(3) * (GRID_ROWS + 0.5) + hexSize + yOff + hexSize + 8;
 
   const handleClick = useCallback((col: number, row: number) => {
     if (!isMyTurn) return;
@@ -89,7 +115,7 @@ export function HexGrid({
       className="w-full overflow-x-auto"
       style={{ touchAction: 'manipulation', userSelect: 'none', WebkitUserSelect: 'none' }}
     >
-      {/* RED edge — left: col=0 stripe */}
+      {/* Team labels */}
       <div className="flex items-center gap-1 mb-1 px-1">
         <span
           className="text-xs font-black"
@@ -100,63 +126,92 @@ export function HexGrid({
       </div>
 
       <svg
-        width={maxX}
-        height={maxY}
-        viewBox={`0 0 ${maxX} ${maxY}`}
+        width={svgW}
+        height={svgH}
+        viewBox={`0 0 ${svgW} ${svgH}`}
         style={{ display: 'block' }}
       >
-        {/* GREEN edge markers — top row=0 */}
-        {Array.from({ length: GRID_COLS }, (_, col) => {
-          const { x, y } = getHexCenter(col, 0, hexSize);
-          return (
-            <line
-              key={`gt-${col}`}
-              x1={x - hexSize * 0.5} y1={y - hexSize * 0.85}
-              x2={x + hexSize * 0.5} y2={y - hexSize * 0.85}
-              stroke="#00C853" strokeWidth={3} opacity={0.7}
-            />
-          );
-        })}
-        {/* GREEN edge markers — bottom row=10 */}
-        {Array.from({ length: GRID_COLS }, (_, col) => {
-          const { x, y } = getHexCenter(col, GRID_ROWS - 1, hexSize);
-          return (
-            <line
-              key={`gb-${col}`}
-              x1={x - hexSize * 0.5} y1={y + hexSize * 0.85}
-              x2={x + hexSize * 0.5} y2={y + hexSize * 0.85}
-              stroke="#00C853" strokeWidth={3} opacity={0.7}
-            />
-          );
-        })}
-        {/* RED edge markers — left col=0 */}
+        <defs>
+          {/* Gradients for game cells */}
+          <radialGradient id="hexNeutralGrad" cx="40%" cy="30%" r="65%">
+            <stop offset="0%" stopColor="#2a3f6f" />
+            <stop offset="100%" stopColor="#0b1225" />
+          </radialGradient>
+          <radialGradient id="hexRedGrad" cx="35%" cy="25%" r="70%">
+            <stop offset="0%" stopColor="#ff5555" />
+            <stop offset="100%" stopColor="#8b0000" />
+          </radialGradient>
+          <radialGradient id="hexGreenGrad" cx="35%" cy="25%" r="70%">
+            <stop offset="0%" stopColor="#00e676" />
+            <stop offset="100%" stopColor="#004d20" />
+          </radialGradient>
+          <radialGradient id="hexGoldGrad" cx="35%" cy="25%" r="70%">
+            <stop offset="0%" stopColor="#FFE66D" />
+            <stop offset="100%" stopColor="#8B6914" />
+          </radialGradient>
+          {/* Gradients for border cells */}
+          <radialGradient id="hexBorderRedGrad" cx="35%" cy="25%" r="70%">
+            <stop offset="0%" stopColor="#ff3333" />
+            <stop offset="100%" stopColor="#7a0000" />
+          </radialGradient>
+          <radialGradient id="hexBorderGreenGrad" cx="35%" cy="25%" r="70%">
+            <stop offset="0%" stopColor="#00c853" />
+            <stop offset="100%" stopColor="#00401a" />
+          </radialGradient>
+          {/* Neon glow filters */}
+          <filter id="glowRed" x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="#ff2222" floodOpacity="0.9"/>
+          </filter>
+          <filter id="glowGreen" x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="#00ff88" floodOpacity="0.9"/>
+          </filter>
+          <filter id="glowGold" x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx="0" dy="0" stdDeviation="4" floodColor="#FFD700" floodOpacity="1"/>
+          </filter>
+        </defs>
+
+        {/* ─── Border hex cells (decorative) ─── */}
+
+        {/* RED border — left column (col=-1) */}
         {Array.from({ length: GRID_ROWS }, (_, row) => {
-          const { x, y } = getHexCenter(0, row, hexSize);
-          return (
-            <line
-              key={`rl-${row}`}
-              x1={x - hexSize} y1={y}
-              x2={x - hexSize * 0.75} y2={y}
-              stroke="#FF2C2C" strokeWidth={3} opacity={0.7}
-            />
-          );
-        })}
-        {/* RED edge markers — right col=10 */}
-        {Array.from({ length: GRID_ROWS }, (_, row) => {
-          const { x, y } = getHexCenter(GRID_COLS - 1, row, hexSize);
-          return (
-            <line
-              key={`rr-${row}`}
-              x1={x + hexSize * 0.75} y1={y}
-              x2={x + hexSize} y2={y}
-              stroke="#FF2C2C" strokeWidth={3} opacity={0.7}
-            />
-          );
+          const { x, y } = getCtr(-1, row);
+          return <polygon key={`rbl-${row}`} points={getHexPts(x, y, hexSize)}
+            fill="url(#hexBorderRedGrad)" stroke="#550000" strokeWidth={0.8} opacity={0.85} />;
         })}
 
-        {/* Cells */}
+        {/* RED border — right column (col=GRID_COLS) */}
+        {Array.from({ length: GRID_ROWS }, (_, row) => {
+          const { x, y } = getCtr(GRID_COLS, row);
+          return <polygon key={`rbr-${row}`} points={getHexPts(x, y, hexSize)}
+            fill="url(#hexBorderRedGrad)" stroke="#550000" strokeWidth={0.8} opacity={0.85} />;
+        })}
+
+        {/* GREEN border — top row (row=-1) */}
+        {Array.from({ length: GRID_COLS }, (_, col) => {
+          const { x, y } = getCtr(col, -1);
+          return <polygon key={`gbt-${col}`} points={getHexPts(x, y, hexSize)}
+            fill="url(#hexBorderGreenGrad)" stroke="#004400" strokeWidth={0.8} opacity={0.85} />;
+        })}
+
+        {/* GREEN border — bottom row (row=GRID_ROWS) */}
+        {Array.from({ length: GRID_COLS }, (_, col) => {
+          const { x, y } = getCtr(col, GRID_ROWS);
+          return <polygon key={`gbb-${col}`} points={getHexPts(x, y, hexSize)}
+            fill="url(#hexBorderGreenGrad)" stroke="#004400" strokeWidth={0.8} opacity={0.85} />;
+        })}
+
+        {/* Corner fill cells (dark neutral) */}
+        {([-1, GRID_COLS] as number[]).map(col =>
+          ([-1, GRID_ROWS] as number[]).map(row => {
+            const { x, y } = getCtr(col, row);
+            return <polygon key={`corner-${col}-${row}`} points={getHexPts(x, y, hexSize)}
+              fill="#08111f" stroke="#1a2540" strokeWidth={0.8} />;
+          })
+        )}
+
+        {/* ─── Game cells ─── */}
         {cells.map(cell => {
-          const { x, y } = getHexCenter(cell.col, cell.row, hexSize);
+          const { x, y } = getCtr(cell.col, cell.row);
           const key = cellKey(cell.col, cell.row);
           const isSel = !!(selectedCell && selectedCell.col === cell.col && selectedCell.row === cell.row);
           const isWin = winPathSet.has(key);

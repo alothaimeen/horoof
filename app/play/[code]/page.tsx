@@ -9,7 +9,7 @@ import { QuestionModal } from '../../components/QuestionModal';
 import { RoundTracker } from '../../components/RoundTracker';
 import { DairataAlDaw } from '../../components/DairataAlDaw';
 
-type GamePhase = 'CELL_SELECTION' | 'ANSWERING' | 'ANSWER_REVEAL' | 'ROUND_OVER' | 'GAME_OVER' | 'DAIRAT_AL_DAW';
+type GamePhase = 'CELL_SELECTION' | 'BUZZER' | 'BUZZER_SECOND_CHANCE' | 'ANSWERING' | 'ANSWER_REVEAL' | 'ROUND_OVER' | 'GAME_OVER' | 'DAIRAT_AL_DAW';
 type PagePhase = 'loading' | GamePhase;
 
 interface QuestionInfo {
@@ -57,6 +57,7 @@ export default function PlayPage() {
   const [myTeam, setMyTeam] = useState<TeamColor | null>(null);
   const [isHost, setIsHost] = useState(false);
   const myIdRef = useRef('');
+  const [buzzerTeam, setBuzzerTeam] = useState<TeamColor | null>(null);
 
   const [dawState, setDawState] = useState<DawClientState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +69,10 @@ export default function PlayPage() {
 
   const handleSubmitAnswer = useCallback((index: number) => {
     getSocket().emit('submit_answer', { roomCode: code, answerIndex: index });
+  }, [code]);
+
+  const handleBuzzIn = useCallback(() => {
+    getSocket().emit('buzz_in', { roomCode: code });
   }, [code]);
 
   const handleNextRound = useCallback(() => {
@@ -96,6 +101,7 @@ export default function PlayPage() {
       setCorrectIndex(null);
       setAnswerLocked(false);
       setCorrectPlayerName(null);
+      setBuzzerTeam(null);
     };
 
     // --- JOIN ---
@@ -118,9 +124,10 @@ export default function PlayPage() {
       setCurrentRound(data.currentRound);
       setRoundWins(data.roundWins);
       setWinningPath(data.winningPath);
+      if (data.buzzerTeam) setBuzzerTeam(data.buzzerTeam);
       if (data.activeQuestion) {
         setQuestion(data.activeQuestion);
-        setPhase('ANSWERING');
+        if (data.phase === 'ANSWERING') setPhase('ANSWERING');
       }
     });
 
@@ -142,20 +149,33 @@ export default function PlayPage() {
       setSelectedCell({ col, row });
     });
 
-    // --- QUESTION ---
-    socket.on('question_for_cell', (data: any) => {
+    // --- BUZZER STARTED ---
+    socket.on('buzzer_started', (data: any) => {
       setQuestion({
         letter: data.letter,
         text: data.text,
         options: data.options,
-        endTime: data.endTime,
+        endTime: 0,
         col: data.col,
         row: data.row,
       });
-      setPhase('ANSWERING');
+      setPhase('BUZZER');
       setAnswerLocked(false);
       setCorrectIndex(null);
       setCorrectPlayerName(null);
+      setBuzzerTeam(null);
+    });
+
+    // --- BUZZ CONFIRMED ---
+    socket.on('buzz_confirmed', (data: any) => {
+      setBuzzerTeam(data.team);
+      setPhase('ANSWERING');
+      setQuestion(prev => prev ? { ...prev, endTime: data.endTime } : prev);
+    });
+
+    // --- ANSWER WRONG (team-level, with second chance) ---
+    socket.on('answer_wrong_team', ({ wrongTeam }: any) => {
+      if ('vibrate' in navigator) navigator.vibrate([150, 50, 150]);
     });
 
     // --- ANSWER LOCKED (correct answer) ---
@@ -165,7 +185,7 @@ export default function PlayPage() {
       setCorrectPlayerName(data.playerName);
     });
 
-    // --- ANSWER WRONG (to submitter only) ---
+    // --- ANSWER WRONG (to submitter only — legacy, kept for compatibility) ---
     socket.on('answer_wrong', () => {
       if ('vibrate' in navigator) navigator.vibrate([200]);
     });
@@ -189,11 +209,18 @@ export default function PlayPage() {
       }, 1500);
     });
 
-    // --- PHASE CHANGE (after correct answer reveal) ---
+    // --- PHASE CHANGE (after correct answer reveal or second chance) ---
     socket.on('phase_change', ({ phase: p, currentTeam: ct }: any) => {
       setPhase(p);
       setCurrentTeam(ct);
-      clearQuestion();
+      if (p === 'CELL_SELECTION') {
+        clearQuestion();
+      }
+      // BUZZER_SECOND_CHANCE: clear buzzerTeam so other team can buzz
+      if (p === 'BUZZER_SECOND_CHANCE') {
+        // keep question displayed, just change phase — buzzerTeam is reset server-side
+        // the client keeps buzzerTeam so it knows who answered wrong
+      }
     });
 
     // --- ROUND OVER ---
@@ -275,7 +302,8 @@ export default function PlayPage() {
     return () => {
       const events = [
         'room_joined', 'grid_sync', 'game_start', 'cell_selected',
-        'question_for_cell', 'answer_locked', 'answer_wrong', 'cell_claimed',
+        'buzzer_started', 'buzz_confirmed', 'answer_wrong_team',
+        'answer_locked', 'answer_wrong', 'cell_claimed',
         'answer_timeout', 'phase_change', 'round_over', 'round_start',
         'game_over', 'daw_start', 'daw_question', 'daw_result', 'daw_end',
         'host_changed', 'error',
@@ -459,8 +487,8 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Question Modal */}
-      {question && (phase === 'ANSWERING' || correctIndex !== null) && (
+      {/* Question Modal — shown in BUZZER, BUZZER_SECOND_CHANCE, ANSWERING, or when correctIndex revealed */}
+      {question && (phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE' || phase === 'ANSWERING' || correctIndex !== null) && (
         <QuestionModal
           letter={question.letter}
           text={question.text}
@@ -471,7 +499,11 @@ export default function PlayPage() {
           isHost={isHost}
           answerLocked={answerLocked}
           correctIndex={correctIndex}
+          phase={phase as any}
+          buzzerTeam={buzzerTeam}
+          mayBuzz={!isHost && myTeam !== null && myTeam !== buzzerTeam}
           onAnswer={handleSubmitAnswer}
+          onBuzzIn={handleBuzzIn}
         />
       )}
 

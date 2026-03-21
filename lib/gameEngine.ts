@@ -33,6 +33,8 @@ const ANSWER_REVEAL_MS = 1500;
 
 type GamePhase =
   | 'CELL_SELECTION'
+  | 'BUZZER'
+  | 'BUZZER_SECOND_CHANCE'
   | 'ANSWERING'
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
@@ -75,6 +77,8 @@ interface HexGameState {
   players: Map<string, PlayerState>;
   winningPath: string[] | null;
   dawState: DawState | null;
+  buzzerTeam: TeamColor | null;           // team that buzzed in (or null)
+  buzzerLockedTeams: Set<TeamColor>;     // teams that already had their chance
 }
 
 // ─── In-memory state ──────────────────────────────────────────
@@ -177,12 +181,16 @@ export function initGameEngine(io: Server) {
         socket.emit('room_joined', { playerId: player.id, isHost, players: playersData, gameStatus: session.status, phase: game?.phase ?? null });
 
         if (isReconnect && game) {
+          const isBuzzerPhase = game.phase === 'BUZZER' || game.phase === 'BUZZER_SECOND_CHANCE';
           socket.emit('grid_sync', {
             grid: buildGridArray(game), gridVersion: game.gridVersion, phase: game.phase,
             currentTeam: game.currentTeam, currentRound: game.currentRound, roundWins: game.roundWins, winningPath: game.winningPath,
             activeQuestion: (game.phase === 'ANSWERING' && game.activeQuestion)
               ? { letter: game.activeQuestion.letter, text: game.activeQuestion.text, options: game.activeQuestion.options, endTime: game.activeQuestion.endTime, col: game.selectedCell?.col, row: game.selectedCell?.row }
+              : (isBuzzerPhase && game.activeQuestion)
+              ? { letter: game.activeQuestion.letter, text: game.activeQuestion.text, options: game.activeQuestion.options, col: game.selectedCell?.col, row: game.selectedCell?.row }
               : null,
+            buzzerTeam: game.buzzerTeam,
           });
         }
         socket.to(roomCode).emit('player_update', { players: playersData });
@@ -230,6 +238,7 @@ export function initGameEngine(io: Server) {
           redTeam: new Set(redPlayers.map(p => p.id)), greenTeam: new Set(greenPlayers.map(p => p.id)),
           selectedCell: null, activeQuestion: null, answerLocked: false, questionTimer: null,
           questionsByLetter, usedQuestions: new Set(), players, winningPath: null, dawState: null,
+          buzzerTeam: null, buzzerLockedTeams: new Set(),
         };
         activeGames.set(roomCode, game);
         await prisma.gameSession.update({ where: { id: session.id }, data: { status: 'PLAYING' } });
@@ -251,52 +260,122 @@ export function initGameEngine(io: Server) {
       const question = pickQuestion(cell.letter, game.questionsByLetter, game.usedQuestions);
       if (!question) { socket.emit('error', { message: 'لا توجد أسئلة لهذا الحرف' }); return; }
 
-      const endTime = Date.now() + QUESTION_DURATION_MS;
-      game.phase = 'ANSWERING';
+      // Transition to BUZZER phase — no timer yet, waiting for buzz_in
+      game.phase = 'BUZZER';
       game.selectedCell = { col, row };
       game.answerLocked = false;
-      game.activeQuestion = { id: question.id, letter: cell.letter, text: question.text, options: question.options, correctIndex: question.correctIndex, endTime };
+      game.buzzerTeam = null;
+      game.buzzerLockedTeams = new Set();
+      game.activeQuestion = { id: question.id, letter: cell.letter, text: question.text, options: question.options, correctIndex: question.correctIndex, endTime: 0 };
 
+      // Safety timeout: if no one buzzes in 30s, release cell and change turn
       if (game.questionTimer) clearTimeout(game.questionTimer);
-      game.questionTimer = setTimeout(() => handleQuestionTimeout(io, roomCode), QUESTION_DURATION_MS);
+      game.questionTimer = setTimeout(() => handleBuzzerTimeout(io, roomCode), 30000);
 
       io.to(roomCode).emit('cell_selected', { col, row, letter: cell.letter, team: game.currentTeam });
-      io.to(roomCode).emit('question_for_cell', { letter: cell.letter, text: question.text, options: question.options, endTime, col, row });
+      io.to(roomCode).emit('buzzer_started', { letter: cell.letter, text: question.text, options: question.options, col, row });
+    });
+
+    socket.on('buzz_in', ({ roomCode }: { roomCode: string }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game) return;
+      if (game.phase !== 'BUZZER' && game.phase !== 'BUZZER_SECOND_CHANCE') return;
+      if (playerId === game.hostPlayerId) return;
+
+      const playerTeam: TeamColor | null = game.redTeam.has(playerId) ? 'RED'
+        : game.greenTeam.has(playerId) ? 'GREEN' : null;
+      if (!playerTeam) return;
+
+      // Block teams that already had their chance
+      if (game.buzzerLockedTeams.has(playerTeam)) return;
+      // In BUZZER_SECOND_CHANCE, only the NON-buzzer team can buzz
+      if (game.phase === 'BUZZER_SECOND_CHANCE' && game.buzzerTeam === playerTeam) return;
+
+      // Cancel the on-going timeout (buzzer wait or second-chance wait)
+      if (game.questionTimer) clearTimeout(game.questionTimer);
+
+      const playerState = game.players.get(playerId);
+      const endTime = Date.now() + QUESTION_DURATION_MS;
+      game.phase = 'ANSWERING';
+      game.buzzerTeam = playerTeam;
+      game.buzzerLockedTeams.add(playerTeam);
+      game.answerLocked = false;
+      game.activeQuestion!.endTime = endTime;
+      game.questionTimer = setTimeout(() => handleQuestionTimeout(io, roomCode), QUESTION_DURATION_MS);
+
+      io.to(roomCode).emit('buzz_confirmed', {
+        team: playerTeam,
+        playerName: playerState?.name ?? '',
+        endTime,
+      });
     });
 
     socket.on('submit_answer', ({ roomCode, answerIndex }: { roomCode: string; answerIndex: number }) => {
       const playerId = socket.data.playerId as string;
       const game = activeGames.get(roomCode);
       if (!game || game.phase !== 'ANSWERING' || game.answerLocked) return;
-      const teamSet = game.currentTeam === 'RED' ? game.redTeam : game.greenTeam;
+
+      // Answer permission: must belong to the team that buzzed in
+      const answeringTeam = game.buzzerTeam ?? game.currentTeam;
+      const teamSet = answeringTeam === 'RED' ? game.redTeam : game.greenTeam;
       if (!teamSet.has(playerId) || !game.activeQuestion || !game.selectedCell) return;
 
       const isCorrect = answerIndex === game.activeQuestion.correctIndex;
-      if (!isCorrect) { socket.emit('answer_wrong', {}); return; }
 
+      if (!isCorrect) {
+        // Lock immediately to prevent further submissions from this team
+        game.answerLocked = true;
+        if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
+
+        const playerState = game.players.get(playerId);
+        const otherT = otherTeam(answeringTeam);
+        const otherAlreadyUsed = game.buzzerLockedTeams.has(otherT);
+
+        if (!otherAlreadyUsed) {
+          // Give the other team a second chance to buzz in
+          game.phase = 'BUZZER_SECOND_CHANCE';
+          game.answerLocked = false;
+          io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
+          io.to(roomCode).emit('phase_change', { phase: game.phase, currentTeam: game.currentTeam });
+          // 10s timeout for BUZZER_SECOND_CHANCE
+          game.questionTimer = setTimeout(() => {
+            const g = activeGames.get(roomCode);
+            if (!g || g.phase !== 'BUZZER_SECOND_CHANCE') return;
+            releaseCellAndChangeTurn(io, roomCode, g, g.activeQuestion?.correctIndex ?? -1);
+          }, 10000);
+        } else {
+          // Both teams failed — release cell and change turn
+          io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
+          releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion.correctIndex);
+        }
+        return;
+      }
+
+      // ─── CORRECT ANSWER ───
       game.answerLocked = true;
       if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
 
       const { col, row } = game.selectedCell;
       const playerState = game.players.get(playerId);
+      const cellWinner = game.buzzerTeam ?? game.currentTeam; // whoever buzzed gets the cell
       io.to(roomCode).emit('answer_locked', { correctPlayerId: playerId, playerName: playerState?.name ?? '', col, row, correctIndex: game.activeQuestion.correctIndex });
 
       const cell = game.grid.get(cellKey(col, row));
-      if (cell) cell.owner = game.currentTeam;
+      if (cell) cell.owner = cellWinner;
       game.gridVersion++;
-      io.to(roomCode).emit('cell_claimed', { col, row, owner: game.currentTeam, gridVersion: game.gridVersion });
+      io.to(roomCode).emit('cell_claimed', { col, row, owner: cellWinner, gridVersion: game.gridVersion });
       game.phase = 'ANSWER_REVEAL';
 
       setTimeout(() => {
         const g = activeGames.get(roomCode);
         if (!g) return;
-        const winner = g.currentTeam;
-        if (checkWin(g.grid, winner)) {
-          g.winningPath = getWinningPath(g.grid, winner);
-          g.roundWins[winner]++;
-          if (g.roundWins[winner] >= ROUNDS_TO_WIN) {
+        if (checkWin(g.grid, cellWinner)) {
+          g.winningPath = getWinningPath(g.grid, cellWinner);
+          g.roundWins[cellWinner]++;
+          if (g.roundWins[cellWinner] >= ROUNDS_TO_WIN) {
             g.phase = 'GAME_OVER';
-            io.to(roomCode).emit('game_over', { winner, roundWins: g.roundWins, winningPath: g.winningPath });
+            io.to(roomCode).emit('game_over', { winner: cellWinner, roundWins: g.roundWins, winningPath: g.winningPath });
           } else {
             g.phase = 'ROUND_OVER';
             io.to(roomCode).emit('round_over', { winner, roundWins: g.roundWins, winningPath: g.winningPath });
@@ -306,6 +385,8 @@ export function initGameEngine(io: Server) {
           g.phase = 'CELL_SELECTION';
           g.selectedCell = null;
           g.activeQuestion = null;
+          g.buzzerTeam = null;
+          g.buzzerLockedTeams = new Set();
           io.to(roomCode).emit('phase_change', { phase: g.phase, currentTeam: g.currentTeam });
         }
       }, ANSWER_REVEAL_MS);
@@ -358,10 +439,27 @@ export function initGameEngine(io: Server) {
         if (game) {
           const ps = game.players.get(playerId);
           if (ps) { ps.isConnected = false; ps.socketId = null; }
-          if (game.phase === 'ANSWERING' && getConnectedTeamMembers(game, game.currentTeam).length === 0) {
-            if (game.questionTimer) clearTimeout(game.questionTimer);
-            game.questionTimer = null;
-            handleQuestionTimeout(io, roomCode);
+          if (game.phase === 'ANSWERING') {
+            const answeringTeam = game.buzzerTeam ?? game.currentTeam;
+            if (getConnectedTeamMembers(game, answeringTeam).length === 0) {
+              if (game.questionTimer) clearTimeout(game.questionTimer);
+              game.questionTimer = null;
+              // Move to BUZZER_SECOND_CHANCE for the other team if available
+              const otherT = otherTeam(answeringTeam);
+              if (!game.buzzerLockedTeams.has(otherT)) {
+                game.phase = 'BUZZER_SECOND_CHANCE';
+                game.answerLocked = false;
+                io.to(roomCode).emit('phase_change', { phase: game.phase, currentTeam: game.currentTeam });
+                io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: '' });
+                game.questionTimer = setTimeout(() => {
+                  const g = activeGames.get(roomCode);
+                  if (!g || g.phase !== 'BUZZER_SECOND_CHANCE') return;
+                  releaseCellAndChangeTurn(io, roomCode, g, g.activeQuestion?.correctIndex ?? -1);
+                }, 10000);
+              } else {
+                handleQuestionTimeout(io, roomCode);
+              }
+            }
           }
         }
         const session = await prisma.gameSession.findUnique({ where: { code: roomCode }, include: { players: { where: { isConnected: true }, orderBy: { joinOrder: 'asc' } } } });
@@ -379,14 +477,46 @@ export function initGameEngine(io: Server) {
 
   });
 
+  function releaseCellAndChangeTurn(io: Server, roomCode: string, game: HexGameState, correctIndex: number) {
+    if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
+    game.currentTeam = otherTeam(game.currentTeam);
+    game.phase = 'CELL_SELECTION';
+    game.selectedCell = null;
+    game.activeQuestion = null;
+    game.answerLocked = false;
+    game.buzzerTeam = null;
+    game.buzzerLockedTeams = new Set();
+    io.to(roomCode).emit('answer_timeout', { correctIndex, currentTeam: game.currentTeam });
+  }
+
+  function handleBuzzerTimeout(io: Server, roomCode: string) {
+    const game = activeGames.get(roomCode);
+    if (!game || (game.phase !== 'BUZZER' && game.phase !== 'BUZZER_SECOND_CHANCE')) return;
+    releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion?.correctIndex ?? -1);
+  }
+
   function handleQuestionTimeout(io: Server, roomCode: string) {
     const game = activeGames.get(roomCode);
     if (!game || game.phase !== 'ANSWERING') return;
-    const correctIndex = game.activeQuestion?.correctIndex ?? -1;
-    game.currentTeam = otherTeam(game.currentTeam);
-    game.phase = 'CELL_SELECTION';
-    game.selectedCell = null; game.activeQuestion = null; game.answerLocked = false;
-    io.to(roomCode).emit('answer_timeout', { correctIndex, currentTeam: game.currentTeam });
+
+    const answeringTeam = game.buzzerTeam ?? game.currentTeam;
+    const otherT = otherTeam(answeringTeam);
+    const otherAlreadyUsed = game.buzzerLockedTeams.has(otherT);
+
+    if (!otherAlreadyUsed) {
+      // Give the other team a second chance
+      game.phase = 'BUZZER_SECOND_CHANCE';
+      game.answerLocked = false;
+      io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: '' });
+      io.to(roomCode).emit('phase_change', { phase: game.phase, currentTeam: game.currentTeam });
+      game.questionTimer = setTimeout(() => {
+        const g = activeGames.get(roomCode);
+        if (!g || g.phase !== 'BUZZER_SECOND_CHANCE') return;
+        releaseCellAndChangeTurn(io, roomCode, g, g.activeQuestion?.correctIndex ?? -1);
+      }, 10000);
+    } else {
+      releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion?.correctIndex ?? -1);
+    }
   }
 
   function endDaw(io: Server, roomCode: string) {
