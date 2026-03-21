@@ -248,8 +248,8 @@ export function QuestionModal({
           })}
         </div>
 
-        {/* Buzz-in button (BUZZER / TIEBREAKER phases, after options revealed) */}
-        {isBuzzerPhase && buzzerCanBuzz && mayBuzz && !buzzerTeam && (
+        {/* Buzz-in button (BUZZER / TIEBREAKER / BUZZER_SECOND_CHANCE phases) */}
+        {((isBuzzerPhase && buzzerCanBuzz && !buzzerTeam) || phase === 'BUZZER_SECOND_CHANCE') && mayBuzz && (
           <button
             onClick={onBuzzIn}
             className="w-full py-4 rounded-xl font-black text-lg tracking-wide transition-all duration-150 active:scale-95"

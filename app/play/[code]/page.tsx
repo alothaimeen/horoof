@@ -182,6 +182,11 @@ export default function PlayPage() {
       if (data.activeQuestion) {
         setQuestion(data.activeQuestion);
         if (data.phase === 'ANSWERING') setPhase('ANSWERING');
+        // عند إعادة الاتصال أثناء مرحلة البازر — أظهر جميع الخيارات فوراً
+        if (data.phase === 'BUZZER' || data.phase === 'TIEBREAKER' || data.phase === 'BUZZER_SECOND_CHANCE') {
+          setOptionRevealTime(Date.now() - 60000);
+          setBuzzerOpenTime(data.activeQuestion.buzzerOpenTime ?? null);
+        }
       }
     });
 

@@ -111,6 +111,8 @@ interface HexGameState {
 
 // ─── In-memory state ──────────────────────────────────────────
 const activeGames = new Map<string, HexGameState>();
+// Pending host-transfer timeouts — cancelled if the host reconnects within the grace period
+const pendingHostTransfers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // ─── Helpers ──────────────────────────────────────────────────
 
@@ -182,6 +184,11 @@ export function initGameEngine(io: Server) {
             isReconnect = true;
             const game = activeGames.get(roomCode);
             if (game) { const ps = game.players.get(savedPlayerId); if (ps) { ps.socketId = socket.id; ps.isConnected = true; } }
+            // Cancel any pending host-transfer (host reconnected in time)
+            if (pendingHostTransfers.has(savedPlayerId)) {
+              clearTimeout(pendingHostTransfers.get(savedPlayerId)!);
+              pendingHostTransfers.delete(savedPlayerId);
+            }
           }
         }
 
@@ -813,14 +820,28 @@ export function initGameEngine(io: Server) {
             }
           }
         }
-        const session = await prisma.gameSession.findUnique({ where: { code: roomCode }, include: { players: { where: { isConnected: true }, orderBy: { joinOrder: 'asc' } } } });
-        // لا تنقل لقب المقدم في مرحلة الانتظار — يسترجعه عند عودته بنفس playerId
-        if (session?.hostId === playerId && session.status !== 'WAITING' && session.players.length > 0) {
-          const newHost = session.players[0];
-          await prisma.gameSession.update({ where: { id: session.id }, data: { hostId: newHost.id } });
-          if (game) game.hostPlayerId = newHost.id;
-          const newHostSocket = [...io.sockets.sockets.values()].find(s => s.data.playerId === newHost.id);
-          if (newHostSocket) newHostSocket.emit('host_changed', { newHostId: newHost.id });
+        // انقل لقب المقدم فقط في حالة اللعب وبعد فترة سماح (5 ثوان) لتجنب النقل العرضي عند تحديث الصفحة
+        const currentSession = await prisma.gameSession.findUnique({ where: { code: roomCode }, select: { hostId: true, status: true } });
+        if (currentSession?.hostId === playerId && currentSession.status !== 'WAITING') {
+          const transferTimeout = setTimeout(async () => {
+            pendingHostTransfers.delete(playerId);
+            try {
+              const freshSession = await prisma.gameSession.findUnique({
+                where: { code: roomCode },
+                include: { players: { where: { isConnected: true }, orderBy: { joinOrder: 'asc' } } },
+              });
+              if (!freshSession || freshSession.hostId !== playerId || freshSession.players.length === 0) return;
+              const newHost = freshSession.players[0];
+              await prisma.gameSession.update({ where: { id: freshSession.id }, data: { hostId: newHost.id } });
+              const g = activeGames.get(roomCode);
+              if (g) g.hostPlayerId = newHost.id;
+              const newHostSocket = [...io.sockets.sockets.values()].find(s => s.data.playerId === newHost.id);
+              if (newHostSocket) newHostSocket.emit('host_changed', { newHostId: newHost.id });
+              const allPlayers = await prisma.player.findMany({ where: { session: { code: roomCode } }, orderBy: { joinOrder: 'asc' } });
+              io.to(roomCode).emit('player_update', { players: allPlayers.map(p => ({ id: p.id, name: p.name, isConnected: p.isConnected, team: (p as any).team ?? null, joinOrder: p.joinOrder })) });
+            } catch (err) { console.error('delayed host transfer error:', err); }
+          }, 5000);
+          pendingHostTransfers.set(playerId, transferTimeout);
         }
         const allPlayers = await prisma.player.findMany({ where: { session: { code: roomCode } }, orderBy: { joinOrder: 'asc' } });
         io.to(roomCode).emit('player_update', { players: allPlayers.map(p => ({ id: p.id, name: p.name, isConnected: p.isConnected, team: (p as any).team ?? null, joinOrder: p.joinOrder })) });
