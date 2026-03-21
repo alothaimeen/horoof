@@ -1,0 +1,12 @@
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+COPY .next ./.next
+COPY dist ./dist
+COPY prisma ./prisma
+COPY public ./public
+COPY node_modules ./node_modules
+COPY package.json ./package.json
+RUN npx prisma generate
+EXPOSE 3000
+CMD ["node", "dist/server.js"]

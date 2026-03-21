@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model QuestionBank {
+  id           Int      @id @default(autoincrement())
+  text         String
+  options      Json
+  correctIndex Int
+  category     String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  sessionQuestions SessionQuestion[]
+  answers          Answer[]
+}
+
+model GameSession {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  status    String   @default("WAITING")
+  hostId    String?
+  gameType  String   @default("HUROOF")
+  createdAt DateTime @default(now())
+
+  players   Player[]
+  questions SessionQuestion[]
+}
+
+model SessionQuestion {
+  id         Int    @id @default(autoincrement())
+  orderIndex Int
+  sessionId  String
+  questionId Int
+
+  session  GameSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question QuestionBank @relation(fields: [questionId], references: [id])
+  answers  Answer[]
+
+  @@index([sessionId])
+}
+
+model Player {
+  id          String   @id @default(uuid())
+  socketId    String?
+  name        String
+  score       Int      @default(0)
+  joinOrder   Int
+  isConnected Boolean  @default(true)
+  team        String?  // 'RED' | 'GREEN' | null (host has no team)
+  sessionId   String
+  createdAt   DateTime @default(now())
+
+  session GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  answers Answer[]
+
+  @@index([sessionId])
+}
+
+model Answer {
+  id                Int      @id @default(autoincrement())
+  playerId          String
+  sessionQuestionId Int
+  questionId        Int
+  answerIndex       Int
+  isCorrect         Boolean
+  pointsEarned      Int      @default(0)
+  timeTakenMs       Int
+  createdAt         DateTime @default(now())
+
+  player          Player          @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  sessionQuestion SessionQuestion @relation(fields: [sessionQuestionId], references: [id], onDelete: Cascade)
+  question        QuestionBank    @relation(fields: [questionId], references: [id])
+
+  @@unique([playerId, sessionQuestionId])
+  @@index([sessionQuestionId])
+}

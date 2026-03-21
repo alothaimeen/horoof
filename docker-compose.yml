@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: horoof_db
+      POSTGRES_USER: horoof_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - horoof_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U horoof_user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: always
+    ports:
+      - "3001:3000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://horoof_user:${DB_PASSWORD}@db:5432/horoof_db
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "npx prisma db push --accept-data-loss && node dist/server.js"
+
+volumes:
+  horoof_pgdata:

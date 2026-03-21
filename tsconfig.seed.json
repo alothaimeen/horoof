@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"ES2020","module":"CommonJS","esModuleInterop":true,"outDir":"dist-seed","strict":false},"include":["prisma/seed.ts"]}

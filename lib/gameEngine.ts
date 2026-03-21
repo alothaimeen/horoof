@@ -1,0 +1,400 @@
+﻿import { Server, Socket } from 'socket.io';
+import { prisma } from './prisma';
+import {
+  HexCell,
+  TeamColor,
+  initGrid,
+  cellKey,
+  checkWin,
+  getWinningPath,
+  preWarmNeighborsCache,
+} from './hexUtils';
+import {
+  QuestionData,
+  loadQuestionsByLetter,
+  pickQuestion,
+  getAvailableLetters,
+} from './questionLoader';
+import {
+  DawState,
+  createDawState,
+  getCurrentDawQuestion,
+  advanceDaw,
+  clearDawTimeout,
+} from './dawEngine';
+
+// ─── Config ───────────────────────────────────────────────────
+const QUESTION_DURATION_MS =
+  parseInt(process.env.QUESTION_DURATION_SECONDS || '30') * 1000;
+const ROUNDS_TO_WIN = 3;
+const ANSWER_REVEAL_MS = 1500;
+
+// ─── Types ────────────────────────────────────────────────────
+
+type GamePhase =
+  | 'CELL_SELECTION'
+  | 'ANSWERING'
+  | 'ANSWER_REVEAL'
+  | 'ROUND_OVER'
+  | 'GAME_OVER'
+  | 'DAIRAT_AL_DAW';
+
+interface PlayerState {
+  id: string;
+  name: string;
+  joinOrder: number;
+  isConnected: boolean;
+  socketId: string | null;
+  team: TeamColor | null;
+}
+
+interface HexGameState {
+  sessionId: string;
+  hostPlayerId: string;
+  phase: GamePhase;
+  currentRound: number;
+  roundWins: Record<TeamColor, number>;
+  currentTeam: TeamColor;
+  grid: Map<string, HexCell>;
+  gridVersion: number;
+  redTeam: Set<string>;
+  greenTeam: Set<string>;
+  selectedCell: { col: number; row: number } | null;
+  activeQuestion: {
+    id: number;
+    letter: string;
+    text: string;
+    options: string[];
+    correctIndex: number;
+    endTime: number;
+  } | null;
+  answerLocked: boolean;
+  questionTimer: ReturnType<typeof setTimeout> | null;
+  questionsByLetter: Map<string, QuestionData[]>;
+  usedQuestions: Set<number>;
+  players: Map<string, PlayerState>;
+  winningPath: string[] | null;
+  dawState: DawState | null;
+}
+
+// ─── In-memory state ──────────────────────────────────────────
+const activeGames = new Map<string, HexGameState>();
+
+// ─── Helpers ──────────────────────────────────────────────────
+
+function otherTeam(team: TeamColor): TeamColor {
+  return team === 'RED' ? 'GREEN' : 'RED';
+}
+
+function getConnectedTeamMembers(game: HexGameState, team: TeamColor): PlayerState[] {
+  const ids = team === 'RED' ? game.redTeam : game.greenTeam;
+  return [...ids]
+    .map(id => game.players.get(id))
+    .filter((p): p is PlayerState => !!p && p.isConnected);
+}
+
+function buildGridArray(game: HexGameState): HexCell[] {
+  return [...game.grid.values()];
+}
+
+function buildPlayersPayload(game: HexGameState) {
+  return [...game.players.values()].map(p => ({
+    id: p.id,
+    name: p.name,
+    isConnected: p.isConnected,
+    team: p.team,
+    joinOrder: p.joinOrder,
+  }));
+}
+
+function cleanupGame(roomCode: string) {
+  const game = activeGames.get(roomCode);
+  if (!game) return;
+  if (game.questionTimer) clearTimeout(game.questionTimer);
+  if (game.dawState) clearDawTimeout(game.dawState);
+  activeGames.delete(roomCode);
+}
+
+// ─── Engine ───────────────────────────────────────────────────
+
+export function initGameEngine(io: Server) {
+  preWarmNeighborsCache();
+
+  setInterval(() => {
+    for (const [roomCode, game] of activeGames.entries()) {
+      const anyConnected = [...game.players.values()].some(p => p.isConnected);
+      if (!anyConnected) cleanupGame(roomCode);
+    }
+  }, 5 * 60_000);
+
+  io.on('connection', (socket: Socket) => {
+
+    socket.on('join_room', async ({
+      roomCode, playerName, savedPlayerId,
+    }: { roomCode: string; playerName: string; savedPlayerId?: string }) => {
+      try {
+        const session = await prisma.gameSession.findUnique({
+          where: { code: roomCode },
+          include: { players: { orderBy: { joinOrder: 'asc' } } },
+        });
+        if (!session) { socket.emit('error', { message: 'الغرفة غير موجودة' }); return; }
+        if (session.status === 'ENDED') { socket.emit('error', { message: 'انتهت هذه اللعبة' }); return; }
+
+        let player; let isReconnect = false;
+
+        if (savedPlayerId) {
+          const existing = session.players.find(p => p.id === savedPlayerId);
+          if (existing) {
+            player = await prisma.player.update({ where: { id: savedPlayerId }, data: { socketId: socket.id, isConnected: true } });
+            isReconnect = true;
+            const game = activeGames.get(roomCode);
+            if (game) { const ps = game.players.get(savedPlayerId); if (ps) { ps.socketId = socket.id; ps.isConnected = true; } }
+          }
+        }
+
+        if (!player) {
+          const bySocket = session.players.find(p => p.socketId === socket.id);
+          if (bySocket) { player = bySocket; isReconnect = true; }
+        }
+
+        if (!player) {
+          if (session.status === 'PLAYING') { socket.emit('error', { message: 'اللعبة بدأت، لا يمكن الانضمام الآن' }); return; }
+          await prisma.player.updateMany({ where: { socketId: socket.id }, data: { socketId: null } });
+          const joinOrder = session.players.length + 1;
+          player = await prisma.player.create({ data: { name: playerName, socketId: socket.id, joinOrder, sessionId: session.id } });
+          if (joinOrder === 1) await prisma.gameSession.update({ where: { id: session.id }, data: { hostId: player.id } });
+        }
+
+        socket.data.playerId = player.id;
+        socket.data.roomCode = roomCode;
+        socket.join(roomCode);
+
+        const updatedSession = await prisma.gameSession.findUnique({ where: { code: roomCode }, include: { players: { orderBy: { joinOrder: 'asc' } } } });
+        const isHost = updatedSession!.hostId === player.id;
+        const game = activeGames.get(roomCode);
+        const playersData = updatedSession!.players.map(p => ({ id: p.id, name: p.name, isConnected: p.isConnected, team: (p as any).team ?? null, joinOrder: p.joinOrder }));
+
+        socket.emit('room_joined', { playerId: player.id, isHost, players: playersData, gameStatus: session.status, phase: game?.phase ?? null });
+
+        if (isReconnect && game) {
+          socket.emit('grid_sync', {
+            grid: buildGridArray(game), gridVersion: game.gridVersion, phase: game.phase,
+            currentTeam: game.currentTeam, currentRound: game.currentRound, roundWins: game.roundWins, winningPath: game.winningPath,
+            activeQuestion: (game.phase === 'ANSWERING' && game.activeQuestion)
+              ? { letter: game.activeQuestion.letter, text: game.activeQuestion.text, options: game.activeQuestion.options, endTime: game.activeQuestion.endTime, col: game.selectedCell?.col, row: game.selectedCell?.row }
+              : null,
+          });
+        }
+        socket.to(roomCode).emit('player_update', { players: playersData });
+      } catch (err) {
+        console.error('join_room error:', err);
+        socket.emit('error', { message: 'حدث خطأ، حاول مرة أخرى' });
+      }
+    });
+
+    socket.on('set_team', async ({ roomCode, team }: { roomCode: string; team: TeamColor }) => {
+      const playerId = socket.data.playerId as string;
+      if (!playerId) return;
+      try {
+        const session = await prisma.gameSession.findUnique({ where: { code: roomCode }, select: { id: true, status: true, hostId: true } });
+        if (!session || session.status !== 'WAITING' || session.hostId === playerId) return;
+        await prisma.player.update({ where: { id: playerId }, data: { team } });
+        const players = await prisma.player.findMany({ where: { sessionId: session.id }, orderBy: { joinOrder: 'asc' }, select: { id: true, name: true, team: true, isConnected: true } });
+        io.to(roomCode).emit('teams_updated', { players: players.map(p => ({ id: p.id, name: p.name, team: p.team, isConnected: p.isConnected })) });
+      } catch (err) { console.error('set_team error:', err); }
+    });
+
+    socket.on('start_game', async ({ roomCode }: { roomCode: string }) => {
+      try {
+        const playerId = socket.data.playerId as string;
+        const session = await prisma.gameSession.findUnique({ where: { code: roomCode }, include: { players: { orderBy: { joinOrder: 'asc' } } } });
+        if (!session || session.status !== 'WAITING') return;
+        if (session.hostId !== playerId) { socket.emit('error', { message: 'فقط الكابتن يمكنه بدء اللعبة' }); return; }
+
+        const nonHost = session.players.filter(p => p.id !== session.hostId);
+        const redPlayers = nonHost.filter(p => (p as any).team === 'RED');
+        const greenPlayers = nonHost.filter(p => (p as any).team === 'GREEN');
+        if (redPlayers.length < 1 || greenPlayers.length < 1) { socket.emit('error', { message: 'يجب أن يكون في كل فريق لاعب واحد على الأقل' }); return; }
+
+        const questionsByLetter = await loadQuestionsByLetter();
+        const letters = getAvailableLetters(questionsByLetter);
+        if (letters.length === 0) { socket.emit('error', { message: 'لا توجد أسئلة في قاعدة البيانات' }); return; }
+
+        const players = new Map<string, PlayerState>();
+        for (const p of session.players) players.set(p.id, { id: p.id, name: p.name, joinOrder: p.joinOrder, isConnected: p.isConnected, socketId: p.socketId, team: (p as any).team ?? null });
+
+        const game: HexGameState = {
+          sessionId: session.id, hostPlayerId: session.hostId!,
+          phase: 'CELL_SELECTION', currentRound: 1, roundWins: { RED: 0, GREEN: 0 }, currentTeam: 'RED',
+          grid: initGrid(letters), gridVersion: 0,
+          redTeam: new Set(redPlayers.map(p => p.id)), greenTeam: new Set(greenPlayers.map(p => p.id)),
+          selectedCell: null, activeQuestion: null, answerLocked: false, questionTimer: null,
+          questionsByLetter, usedQuestions: new Set(), players, winningPath: null, dawState: null,
+        };
+        activeGames.set(roomCode, game);
+        await prisma.gameSession.update({ where: { id: session.id }, data: { status: 'PLAYING' } });
+        io.to(roomCode).emit('game_start', { phase: game.phase, grid: buildGridArray(game), currentTeam: game.currentTeam, round: game.currentRound, roundWins: game.roundWins, gridVersion: game.gridVersion, players: buildPlayersPayload(game) });
+      } catch (err) { console.error('start_game error:', err); socket.emit('error', { message: 'حدث خطأ أثناء بدء اللعبة' }); }
+    });
+
+    socket.on('select_cell', ({ roomCode, col, row }: { roomCode: string; col: number; row: number }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game || game.phase !== 'CELL_SELECTION') return;
+      if (playerId === game.hostPlayerId) return;
+      const teamSet = game.currentTeam === 'RED' ? game.redTeam : game.greenTeam;
+      if (!teamSet.has(playerId)) return;
+      const key = cellKey(col, row);
+      const cell = game.grid.get(key);
+      if (!cell || cell.owner !== null) return;
+
+      const question = pickQuestion(cell.letter, game.questionsByLetter, game.usedQuestions);
+      if (!question) { socket.emit('error', { message: 'لا توجد أسئلة لهذا الحرف' }); return; }
+
+      const endTime = Date.now() + QUESTION_DURATION_MS;
+      game.phase = 'ANSWERING';
+      game.selectedCell = { col, row };
+      game.answerLocked = false;
+      game.activeQuestion = { id: question.id, letter: cell.letter, text: question.text, options: question.options, correctIndex: question.correctIndex, endTime };
+
+      if (game.questionTimer) clearTimeout(game.questionTimer);
+      game.questionTimer = setTimeout(() => handleQuestionTimeout(io, roomCode), QUESTION_DURATION_MS);
+
+      io.to(roomCode).emit('cell_selected', { col, row, letter: cell.letter, team: game.currentTeam });
+      io.to(roomCode).emit('question_for_cell', { letter: cell.letter, text: question.text, options: question.options, endTime, col, row });
+    });
+
+    socket.on('submit_answer', ({ roomCode, answerIndex }: { roomCode: string; answerIndex: number }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game || game.phase !== 'ANSWERING' || game.answerLocked) return;
+      const teamSet = game.currentTeam === 'RED' ? game.redTeam : game.greenTeam;
+      if (!teamSet.has(playerId) || !game.activeQuestion || !game.selectedCell) return;
+
+      const isCorrect = answerIndex === game.activeQuestion.correctIndex;
+      if (!isCorrect) { socket.emit('answer_wrong', {}); return; }
+
+      game.answerLocked = true;
+      if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
+
+      const { col, row } = game.selectedCell;
+      const playerState = game.players.get(playerId);
+      io.to(roomCode).emit('answer_locked', { correctPlayerId: playerId, playerName: playerState?.name ?? '', col, row, correctIndex: game.activeQuestion.correctIndex });
+
+      const cell = game.grid.get(cellKey(col, row));
+      if (cell) cell.owner = game.currentTeam;
+      game.gridVersion++;
+      io.to(roomCode).emit('cell_claimed', { col, row, owner: game.currentTeam, gridVersion: game.gridVersion });
+      game.phase = 'ANSWER_REVEAL';
+
+      setTimeout(() => {
+        const g = activeGames.get(roomCode);
+        if (!g) return;
+        const winner = g.currentTeam;
+        if (checkWin(g.grid, winner)) {
+          g.winningPath = getWinningPath(g.grid, winner);
+          g.roundWins[winner]++;
+          if (g.roundWins[winner] >= ROUNDS_TO_WIN) {
+            g.phase = 'GAME_OVER';
+            io.to(roomCode).emit('game_over', { winner, roundWins: g.roundWins, winningPath: g.winningPath });
+          } else {
+            g.phase = 'ROUND_OVER';
+            io.to(roomCode).emit('round_over', { winner, roundWins: g.roundWins, winningPath: g.winningPath });
+          }
+        } else {
+          g.currentTeam = otherTeam(g.currentTeam);
+          g.phase = 'CELL_SELECTION';
+          g.selectedCell = null;
+          g.activeQuestion = null;
+          io.to(roomCode).emit('phase_change', { phase: g.phase, currentTeam: g.currentTeam });
+        }
+      }, ANSWER_REVEAL_MS);
+    });
+
+    socket.on('next_round', ({ roomCode }: { roomCode: string }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game || game.phase !== 'ROUND_OVER' || playerId !== game.hostPlayerId) return;
+      const letters = getAvailableLetters(game.questionsByLetter);
+      game.grid = initGrid(letters); game.gridVersion = 0;
+      game.currentRound++; game.currentTeam = otherTeam(game.currentTeam);
+      game.phase = 'CELL_SELECTION'; game.selectedCell = null; game.activeQuestion = null;
+      game.winningPath = null; game.usedQuestions = new Set(); game.answerLocked = false;
+      io.to(roomCode).emit('round_start', { round: game.currentRound, grid: buildGridArray(game), currentTeam: game.currentTeam, roundWins: game.roundWins, gridVersion: game.gridVersion });
+    });
+
+    socket.on('start_daw', ({ roomCode }: { roomCode: string }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game || game.phase !== 'GAME_OVER' || playerId !== game.hostPlayerId) return;
+      const winnerTeam: TeamColor = game.roundWins.RED >= ROUNDS_TO_WIN ? 'RED' : 'GREEN';
+      const allQuestions: QuestionData[] = [];
+      for (const qs of game.questionsByLetter.values()) allQuestions.push(...qs);
+      const dawState = createDawState(winnerTeam, allQuestions, () => endDaw(io, roomCode));
+      game.dawState = dawState; game.phase = 'DAIRAT_AL_DAW';
+      io.to(roomCode).emit('daw_start', { winnerTeam, endTime: dawState.endTime });
+      const q = getCurrentDawQuestion(dawState);
+      if (q) io.to(roomCode).emit('daw_question', { text: q.text, options: q.options, index: 0 });
+      else endDaw(io, roomCode);
+    });
+
+    socket.on('daw_judge', ({ roomCode, correct }: { roomCode: string; correct: boolean }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game || game.phase !== 'DAIRAT_AL_DAW' || playerId !== game.hostPlayerId || !game.dawState) return;
+      io.to(roomCode).emit('daw_result', { correct });
+      const next = advanceDaw(game.dawState, correct);
+      if (next) io.to(roomCode).emit('daw_question', { text: next.text, options: next.options, index: game.dawState.currentIndex });
+      else endDaw(io, roomCode);
+    });
+
+    socket.on('disconnect', async () => {
+      try {
+        const playerId = socket.data.playerId as string | undefined;
+        const roomCode = socket.data.roomCode as string | undefined;
+        if (!playerId || !roomCode) return;
+        await prisma.player.update({ where: { id: playerId }, data: { isConnected: false, socketId: null } });
+        const game = activeGames.get(roomCode);
+        if (game) {
+          const ps = game.players.get(playerId);
+          if (ps) { ps.isConnected = false; ps.socketId = null; }
+          if (game.phase === 'ANSWERING' && getConnectedTeamMembers(game, game.currentTeam).length === 0) {
+            if (game.questionTimer) clearTimeout(game.questionTimer);
+            game.questionTimer = null;
+            handleQuestionTimeout(io, roomCode);
+          }
+        }
+        const session = await prisma.gameSession.findUnique({ where: { code: roomCode }, include: { players: { where: { isConnected: true }, orderBy: { joinOrder: 'asc' } } } });
+        if (session?.hostId === playerId && session.players.length > 0) {
+          const newHost = session.players[0];
+          await prisma.gameSession.update({ where: { id: session.id }, data: { hostId: newHost.id } });
+          if (game) game.hostPlayerId = newHost.id;
+          const newHostSocket = [...io.sockets.sockets.values()].find(s => s.data.playerId === newHost.id);
+          if (newHostSocket) newHostSocket.emit('host_changed', { newHostId: newHost.id });
+        }
+        const allPlayers = await prisma.player.findMany({ where: { session: { code: roomCode } }, orderBy: { joinOrder: 'asc' } });
+        io.to(roomCode).emit('player_update', { players: allPlayers.map(p => ({ id: p.id, name: p.name, isConnected: p.isConnected, team: (p as any).team ?? null, joinOrder: p.joinOrder })) });
+      } catch (err) { console.error('disconnect error:', err); }
+    });
+
+  });
+
+  function handleQuestionTimeout(io: Server, roomCode: string) {
+    const game = activeGames.get(roomCode);
+    if (!game || game.phase !== 'ANSWERING') return;
+    const correctIndex = game.activeQuestion?.correctIndex ?? -1;
+    game.currentTeam = otherTeam(game.currentTeam);
+    game.phase = 'CELL_SELECTION';
+    game.selectedCell = null; game.activeQuestion = null; game.answerLocked = false;
+    io.to(roomCode).emit('answer_timeout', { correctIndex, currentTeam: game.currentTeam });
+  }
+
+  function endDaw(io: Server, roomCode: string) {
+    const game = activeGames.get(roomCode);
+    if (!game || !game.dawState) return;
+    const { score, total } = game.dawState;
+    clearDawTimeout(game.dawState);
+    game.dawState = null; game.phase = 'GAME_OVER';
+    io.to(roomCode).emit('daw_end', { score, total });
+  }
+}

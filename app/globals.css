@@ -1,0 +1,382 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-cairo: 'Cairo', sans-serif;
+  --huroof-navy: #0A0E1A;
+  --huroof-gold: #C9A227;
+  --huroof-gold-light: #FFD700;
+  --huroof-neon-green: #00FF7F;
+  --huroof-neon-red: #FF2C2C;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: var(--font-cairo), sans-serif;
+  background: radial-gradient(ellipse at 20% 0%, #0D1B4B 0%, #080C1E 50%, #030508 100%);
+  min-height: 100dvh;
+  color: #C8C8D8;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* ─── الشعار الذهبي المعدني ─── */
+.huroof-logo {
+  background: linear-gradient(180deg,
+    #FFF5A0 0%,
+    #FFD700 20%,
+    #C9A227 45%,
+    #FFE55C 65%,
+    #8B6914 80%,
+    #C9A227 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 0 30px rgba(201, 162, 39, 0.7));
+}
+
+/* ─── النيون الأخضر ─── */
+.neon-green-cell {
+  background: rgba(0, 200, 83, 0.15) !important;
+  border-color: #00C853 !important;
+  color: #69F0AE;
+  text-shadow: 0 0 8px #00FF7F, 0 0 15px #00C853;
+}
+
+/* ─── النيون الأحمر ─── */
+.neon-red-cell {
+  background: rgba(255, 44, 44, 0.15) !important;
+  border-color: #FF2C2C !important;
+  color: #FF8A80;
+  text-shadow: 0 0 8px #FF4444, 0 0 15px #CC0000;
+}
+
+/* ─── بطاقة على خلفية الاستوديو ─── */
+.card {
+  border-radius: 1rem;
+  padding: 1.5rem;
+  background: rgba(10, 14, 26, 0.88);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(201, 162, 39, 0.3);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(201, 162, 39, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* ─── زر رئيسي (ذهبي سكويومورفيك - بيانو زر استوديو) ─── */
+.btn-primary {
+  width: 100%;
+  padding: 1rem 1.5rem;
+  border-radius: 0.75rem;
+  font-size: 1.25rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: linear-gradient(180deg,
+    #FFF5B0 0%,
+    #FFD700 15%,
+    #C9A227 50%,
+    #A07714 75%,
+    #8B6914 100%
+  );
+  color: #0A0E1A;
+  box-shadow:
+    0 3px 0 #5A420A,
+    0 5px 25px rgba(201, 162, 39, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  border: 1px solid #7A5810;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+  position: relative;
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 5px 0 #5A420A,
+    0 8px 30px rgba(201, 162, 39, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow:
+    0 0px 0 #5A420A,
+    0 2px 10px rgba(201, 162, 39, 0.3),
+    inset 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ─── زر فريق أخضر (استوديو) ─── */
+.btn-green {
+  width: 100%;
+  padding: 0.875rem 1.5rem;
+  border-radius: 0.75rem;
+  font-size: 1.1rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: linear-gradient(180deg, #00FF7F 0%, #00C853 40%, #009624 100%);
+  color: #030A03;
+  box-shadow:
+    0 3px 0 #005A15,
+    0 5px 20px rgba(0, 200, 83, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  border: 1px solid #006B1A;
+}
+
+.btn-green:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 0 #005A15, 0 8px 25px rgba(0, 255, 127, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.btn-green:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 #005A15, 0 2px 8px rgba(0, 200, 83, 0.3);
+}
+
+/* ─── زر فريق أحمر (استوديو) ─── */
+.btn-red {
+  width: 100%;
+  padding: 0.875rem 1.5rem;
+  border-radius: 0.75rem;
+  font-size: 1.1rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: linear-gradient(180deg, #FF6B6B 0%, #FF2C2C 40%, #CC0000 100%);
+  color: #0A0000;
+  box-shadow:
+    0 3px 0 #800000,
+    0 5px 20px rgba(255, 44, 44, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  border: 1px solid #800000;
+}
+
+.btn-red:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 0 #800000, 0 8px 25px rgba(255, 80, 80, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.btn-red:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 #800000, 0 2px 8px rgba(255, 44, 44, 0.3);
+}
+
+/* ─── أزرار الخيارات (MCQ) ─── */
+.option-btn {
+  width: 100%;
+  padding: 0.875rem 1rem;
+  border-radius: 0.625rem;
+  text-align: right;
+  font-size: 1.1rem;
+  font-weight: 600;
+  transition: all 0.25s ease;
+  border: 2px solid;
+  user-select: none;
+  background: rgba(10, 14, 26, 0.9);
+  border-color: rgba(201, 162, 39, 0.25);
+  color: #C8C8D8;
+}
+
+.option-btn:hover:not(:disabled) {
+  background: rgba(201, 162, 39, 0.12);
+  border-color: #C9A227;
+  transform: scale(1.02);
+  box-shadow: 0 0 15px rgba(201, 162, 39, 0.2);
+}
+
+.option-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.option-btn.selected {
+  background: rgba(201, 162, 39, 0.15);
+  border-color: #C9A227;
+  box-shadow: 0 0 10px rgba(201, 162, 39, 0.3);
+}
+
+.option-btn.correct {
+  background: rgba(0, 200, 83, 0.2);
+  border-color: #00C853;
+  color: #69F0AE;
+  text-shadow: 0 0 8px rgba(0, 255, 127, 0.5);
+  box-shadow: 0 0 20px rgba(0, 200, 83, 0.3);
+  animation: bounceIn 0.5s ease;
+}
+
+.option-btn.wrong {
+  background: rgba(255, 44, 44, 0.2);
+  border-color: #FF2C2C;
+  color: #FF8A80;
+  box-shadow: 0 0 20px rgba(255, 44, 44, 0.3);
+  animation: shake 0.4s ease;
+}
+
+/* ─── شريط المؤقت ─── */
+.timer-bar {
+  height: 0.5rem;
+  border-radius: 9999px;
+  transition: all 0.5s linear;
+  background: linear-gradient(90deg, #00FF7F, #C9A227, #FF2C2C);
+  box-shadow: 0 0 6px currentColor;
+}
+
+/* ─── شاشة LED (7-segment style) ─── */
+.led-display {
+  font-family: 'Courier New', monospace;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  background: #050505;
+  border-radius: 6px;
+  padding: 0.2rem 0.6rem;
+  border: 2px solid currentColor;
+  box-shadow:
+    inset 0 0 10px rgba(0, 0, 0, 0.8),
+    0 0 15px currentColor;
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* ─── حدود/بطاقة النيون الأخضر ─── */
+.card-neon-green {
+  border-color: rgba(0, 200, 83, 0.5) !important;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 20px rgba(0, 200, 83, 0.15),
+    inset 0 1px 0 rgba(0, 255, 127, 0.05) !important;
+}
+
+/* ─── حدود/بطاقة النيون الأحمر ─── */
+.card-neon-red {
+  border-color: rgba(255, 44, 44, 0.5) !important;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 20px rgba(255, 44, 44, 0.15),
+    inset 0 1px 0 rgba(255, 80, 80, 0.05) !important;
+}
+
+/* ─── ميداليات ─── */
+.medal-gold   { color: #FFD700; }
+.medal-silver { color: #C0C0C0; }
+.medal-bronze { color: #CD7F32; }
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(201, 162, 39, 0.4); border-radius: 2px; }
+
+/* ─── Keyframes (في حال لم تُعرَّف في tailwind) ─── */
+@keyframes bounceIn {
+  0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-12px); }
+  60% { transform: translateY(-6px); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(8px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(5px); }
+}
+
+@keyframes letterFloat {
+  0%   { transform: translateY(110vh) rotate(0deg); opacity: 0; }
+  10%  { opacity: 0.12; }
+  90%  { opacity: 0.06; }
+  100% { transform: translateY(-10vh) rotate(180deg); opacity: 0; }
+}
+
+@keyframes logoGlow {
+  0%, 100% { filter: drop-shadow(0 0 20px rgba(201, 162, 39, 0.6)); }
+  50%       { filter: drop-shadow(0 0 40px rgba(255, 215, 0, 1)); }
+}
+
+
+/* أزرار الخيارات */
+.option-btn {
+  @apply w-full p-4 rounded-2xl text-right text-lg font-semibold transition-all duration-300 border-2 select-none;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(212, 175, 55, 0.3);
+  color: #F5E6D3;
+}
+
+.option-btn:hover:not(:disabled) {
+  background: rgba(212, 175, 55, 0.2);
+  border-color: #D4AF37;
+  transform: scale(1.02);
+}
+
+.option-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.option-btn.selected {
+  background: rgba(212, 175, 55, 0.15);
+  border-color: #D4AF37;
+}
+
+.option-btn.correct {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: #22c55e;
+  animation: bounceIn 0.5s ease;
+}
+
+.option-btn.wrong {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+  animation: shake 0.4s ease;
+}
+
+/* بطاقة رئيسية */
+.card {
+  @apply rounded-3xl p-6;
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+/* زر رئيسي */
+.btn-primary {
+  @apply w-full py-4 px-6 rounded-2xl text-xl font-bold transition-all duration-300;
+  background: linear-gradient(135deg, #D4AF37, #F0D060);
+  color: #0D2E1C;
+  box-shadow: 0 4px 20px rgba(212, 175, 55, 0.4);
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(212, 175, 55, 0.6);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* شريط التايمر */
+.timer-bar {
+  @apply h-3 rounded-full transition-all;
+  background: linear-gradient(90deg, #22c55e, #D4AF37, #ef4444);
+}
+
+/* مدال */
+.medal-gold   { @apply text-yellow-400; }
+.medal-silver { @apply text-gray-300; }
+.medal-bronze { @apply text-amber-600; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(212, 175, 55, 0.4); border-radius: 2px; }
