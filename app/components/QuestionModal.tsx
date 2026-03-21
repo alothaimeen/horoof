@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import type { TeamColor } from '../../lib/hexUtils';
 
 type ModalPhase =
@@ -12,24 +12,28 @@ type ModalPhase =
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
   | 'GAME_OVER'
-  | 'DAIRAT_AL_DAW';
+  | 'DAIRAT_AL_DAW'
+  | 'TIEBREAKER';
 
 interface QuestionModalProps {
   letter: string;
   text: string;
   options: string[];
-  endTime: number;              // timestamp from server, 0 in BUZZER phase
-  timerMaxSec: number;          // max seconds for the current timer (10 for ANSWERING, 30 for BUZZER_OPEN)
+  endTime: number;
+  timerMaxSec: number;
   currentTeam: TeamColor;
-  myTeam: TeamColor | null;     // null for host
+  myTeam: TeamColor | null;
   isHost: boolean;
-  answerLocked: boolean;        // true after someone answered correctly
-  correctIndex: number | null;  // revealed after lock or timeout
+  answerLocked: boolean;
+  correctIndex: number | null;
   phase: ModalPhase;
-  buzzerTeam: TeamColor | null; // which team buzzed in (null if no one yet)
-  openAnswerTeam: TeamColor | null; // team that can directly answer in BUZZER_OPEN
-  openRevealStartTime: number | null; // timestamp when BUZZER_OPEN reveal phase started
-  mayBuzz: boolean;             // can this player's team press the buzzer?
+  buzzerTeam: TeamColor | null;
+  openAnswerTeam: TeamColor | null;
+  openRevealStartTime: number | null;
+  optionRevealTime: number | null;
+  buzzerOpenTime: number | null;
+  mayBuzz: boolean;
+  isTiebreaker?: boolean;
   onAnswer: (index: number) => void;
   onBuzzIn: () => void;
 }
@@ -49,371 +53,283 @@ export function QuestionModal({
   buzzerTeam,
   openAnswerTeam,
   openRevealStartTime,
+  optionRevealTime,
+  buzzerOpenTime,
   mayBuzz,
+  isTiebreaker = false,
   onAnswer,
   onBuzzIn,
 }: QuestionModalProps) {
-  const isBuzzerPhase = phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE';
+  const [timeLeft, setTimeLeft] = useState<number>(timerMaxSec);
+  const [revealedCount, setRevealedCount] = useState<number>(0);
+  const [buzzerCanBuzz, setBuzzerCanBuzz] = useState<boolean>(false);
+  const [buzzerCountdown, setBuzzerCountdown] = useState<number>(30);
+  const rafRef = useRef<number | null>(null);
+
+  const isAnsweringPhase = phase === 'ANSWERING' || (phase === 'TIEBREAKER' && buzzerTeam !== null);
+  const isBuzzerPhase = phase === 'BUZZER' || phase === 'TIEBREAKER';
   const isOpenPhase = phase === 'BUZZER_OPEN';
+  const isRevealPhase = correctIndex !== null;
 
-  const [timeLeft, setTimeLeft] = useState(() => endTime > 0 ? Math.max(0, Math.ceil((endTime - Date.now()) / 1000)) : 0);
-  const [selected, setSelected] = useState<number | null>(null);
-  const [buzzPressed, setBuzzPressed] = useState(false);
-  // Reveal count for BUZZER_OPEN gradual option display
-  const [revealedCount, setRevealedCount] = useState<number>(() =>
-    isOpenPhase && openRevealStartTime !== null ? 0 : options.length
-  );
+  const teamColor = (team: TeamColor) => team === 'RED' ? '#FF4444' : '#00FF7F';
+  const teamLabel = (team: TeamColor) => team === 'RED' ? '🔴 الفريق الأحمر' : '🟢 الفريق الأخضر';
 
-  // Can answer: ANSWERING (only buzzer team) or BUZZER_OPEN (only open answer team)
-  const canAnswer = (
-    (phase === 'ANSWERING' && !isHost && myTeam === buzzerTeam && !answerLocked && selected === null) ||
-    (isOpenPhase && !isHost && myTeam === openAnswerTeam && !answerLocked && selected === null)
-  );
-
-  // Countdown timer — active in ANSWERING and BUZZER_OPEN
+  // ── Generic countdown (ANSWERING / BUZZER_OPEN / BUZZER_SECOND_CHANCE) ──
   useEffect(() => {
-    if (!endTime || endTime === 0 || isBuzzerPhase) {
-      setTimeLeft(0);
-      return;
-    }
-    setTimeLeft(Math.max(0, Math.ceil((endTime - Date.now()) / 1000)));
-    const interval = setInterval(() => {
-      const remaining = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
+    if (!isAnsweringPhase && !isOpenPhase && phase !== 'BUZZER_SECOND_CHANCE') return;
+    if (endTime <= 0) return;
+
+    const tick = () => {
+      const now = Date.now();
+      const remaining = Math.max(0, Math.ceil((endTime - now) / 1000));
       setTimeLeft(remaining);
-      if (remaining === 0) clearInterval(interval);
-    }, 250);
-    return () => clearInterval(interval);
-  }, [endTime, isBuzzerPhase]);
+      if (remaining > 0) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [isAnsweringPhase, isOpenPhase, phase, endTime]);
 
-  // Reset selection when a new question arrives (text changes)
+  // ── Gradual option reveal + buzzer countdown (BUZZER / TIEBREAKER) ──
   useEffect(() => {
-    setSelected(null);
-    setBuzzPressed(false);
-    setRevealedCount(0);
-  }, [text]);
-
-  // Reset selection when phase changes to BUZZER_OPEN
-  useEffect(() => {
-    if (isOpenPhase) setSelected(null);
-  }, [isOpenPhase]);
-
-  // Gradual reveal effect for BUZZER_OPEN options
-  useEffect(() => {
-    if (!isOpenPhase || openRevealStartTime === null) {
-      setRevealedCount(options.length);
+    if (!isBuzzerPhase) {
+      setRevealedCount(0);
+      setBuzzerCanBuzz(false);
+      setBuzzerCountdown(30);
       return;
     }
-    const updateReveal = () => {
-      const elapsed = Date.now() - openRevealStartTime;
-      const count = elapsed < 2000 ? 0
-        : elapsed < 3000 ? 1
-        : elapsed < 4000 ? 2
-        : elapsed < 5000 ? 3
-        : options.length;
+
+    // If no timing provided yet, show nothing
+    if (!optionRevealTime) {
+      setRevealedCount(0);
+      setBuzzerCanBuzz(false);
+      return;
+    }
+
+    let animFrame: number;
+    const REVEAL_PER_OPT_MS = 1000;
+
+    const tick = () => {
+      const now = Date.now();
+
+      // How many options have been revealed
+      const elapsed = now - optionRevealTime;
+      const count = Math.min(options.length, elapsed < 0 ? 0 : Math.floor(elapsed / REVEAL_PER_OPT_MS) + 1);
       setRevealedCount(count);
-      return count;
+
+      // Buzzer open countdown
+      if (buzzerOpenTime && now >= buzzerOpenTime) {
+        setBuzzerCanBuzz(true);
+        const remaining = Math.max(0, Math.ceil((buzzerOpenTime + 30000 - now) / 1000));
+        setBuzzerCountdown(remaining);
+      } else {
+        setBuzzerCanBuzz(false);
+      }
+
+      animFrame = requestAnimationFrame(tick);
     };
-    const initial = updateReveal();
-    if (initial >= options.length) return;
-    const interval = setInterval(() => {
-      const c = updateReveal();
-      if (c >= options.length) clearInterval(interval);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isOpenPhase, openRevealStartTime, options.length]);
+    animFrame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animFrame);
+  }, [isBuzzerPhase, optionRevealTime, buzzerOpenTime, options.length]);
 
-  const handleAnswer = (index: number) => {
-    if (!canAnswer) return;
-    setSelected(index);
-    onAnswer(index);
-  };
+  // Reset when phase changes away
+  useEffect(() => {
+    if (!isBuzzerPhase) {
+      setRevealedCount(options.length); // show all options in answering phases
+    }
+  }, [isBuzzerPhase, options.length]);
 
-  const handleBuzz = () => {
-    if (buzzPressed || !mayBuzz) return;
-    setBuzzPressed(true);
-    onBuzzIn();
-  };
-
-  // Timer percent uses timerMaxSec as denominator
-  const timerPercent = endTime > 0 ? Math.max(0, (timeLeft / timerMaxSec) * 100) : 0;
-
-  // Color: red/tense for ANSWERING (10s), green/calm for BUZZER_OPEN (30s)
-  const timerColor = isOpenPhase
-    ? (timeLeft <= 8 ? '#FFD700' : '#00FF7F')
-    : (timeLeft <= 3 ? '#FF2C2C' : timeLeft <= 6 ? '#FF8C00' : '#FF4444');
-
-  const isRedTeam = currentTeam === 'RED';
-  const teamBorderColor = isRedTeam ? 'rgba(255,44,44,0.6)' : 'rgba(0,200,83,0.6)';
-  const teamGlowColor = isRedTeam ? 'rgba(255,44,44,0.2)' : 'rgba(0,200,83,0.2)';
-  const teamTextColor = isRedTeam ? '#FF4444' : '#00FF7F';
-  const teamLabel = isRedTeam ? 'الفريق الأحمر' : 'الفريق الأخضر';
-
-  const myTeamColor = myTeam === 'RED' ? '#FF4444' : '#00FF7F';
-  const buzzerTeamLabel = buzzerTeam === 'RED' ? 'الأحمر' : buzzerTeam === 'GREEN' ? 'الأخضر' : '';
-  const openTeamLabel = openAnswerTeam === 'RED' ? 'الأحمر' : openAnswerTeam === 'GREEN' ? 'الأخضر' : '';
-  const openTeamColor = openAnswerTeam === 'RED' ? '#FF4444' : '#00FF7F';
+  const borderColor = currentTeam === 'RED' ? 'rgba(255,68,68,0.5)' : 'rgba(0,255,127,0.5)';
+  const glowColor = currentTeam === 'RED' ? 'rgba(255,44,44,0.2)' : 'rgba(0,255,127,0.2)';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4"
-      style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}
+    >
       <div
-        className="w-full md:max-w-lg rounded-t-2xl md:rounded-2xl p-5"
-        dir="rtl"
+        className="relative w-full max-w-lg rounded-2xl p-6 flex flex-col gap-4"
         style={{
-          background: 'rgba(6,10,23,0.97)',
-          border: `2px solid ${isOpenPhase ? 'rgba(0,255,127,0.5)' : teamBorderColor}`,
-          boxShadow: `0 -10px 40px ${isOpenPhase ? 'rgba(0,255,127,0.15)' : teamGlowColor}, 0 0 0 1px rgba(255,255,255,0.03)`,
+          background: '#1a1a2e',
+          border: `1.5px solid ${borderColor}`,
+          boxShadow: `0 0 40px ${glowColor}`,
+          maxHeight: '95vh',
+          overflowY: 'auto',
         }}
       >
-        {/* Header — حرف + فريق */}
-        <div className="flex items-center justify-between mb-3">
+        {/* Header */}
+        <div className="flex items-center justify-between">
           <div
-            className="text-2xl font-black px-3 py-1 rounded-lg"
-            style={{
-              color: '#C9A227',
-              textShadow: '0 0 12px rgba(201,162,39,0.7)',
-              background: 'rgba(201,162,39,0.08)',
-              border: '1px solid rgba(201,162,39,0.3)',
-            }}
+            className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl font-black"
+            style={{ background: borderColor, color: '#0d0d1a' }}
           >
             {letter}
           </div>
-          <span
-            className="text-sm font-black tracking-widest"
-            style={{ color: isOpenPhase ? '#00FF7F' : teamTextColor, textShadow: `0 0 8px ${isOpenPhase ? '#00FF7F' : teamTextColor}` }}
-          >
-            {isOpenPhase ? '⚡ وقت مفتوح' : `● ${teamLabel}`}
-          </span>
-        </div>
-
-        {/* نص السؤال — دائماً مرئي */}
-        <p
-          className="text-lg font-semibold text-center mb-4 leading-relaxed"
-          style={{ color: '#E8E8F0' }}
-        >
-          {text}
-        </p>
-
-        {/* ─── طور BUZZER / BUZZER_SECOND_CHANCE ─── */}
-        {isBuzzerPhase && (
-          <div className="flex flex-col items-center gap-4">
-            {phase === 'BUZZER_SECOND_CHANCE' && (
-              <p className="text-sm font-bold text-center" style={{ color: '#FFD700' }}>
-                ⚡ فرصة الفريق الثاني!
+          <div className="text-center flex-1 px-3">
+            {isTiebreaker && (
+              <p className="text-xs font-bold tracking-widest mb-1" style={{ color: '#C9A227' }}>
+                🏆 سؤال تحديد البداية
               </p>
             )}
-
-            {!isHost && mayBuzz && !buzzPressed && (
-              <button
-                onClick={handleBuzz}
-                className="btn-buzzer"
-                style={{
-                  background: myTeam === 'RED'
-                    ? 'linear-gradient(145deg, #ff5555, #cc0000)'
-                    : 'linear-gradient(145deg, #00e676, #00701a)',
-                  color: '#fff',
-                  border: `2px solid ${myTeamColor}`,
-                  boxShadow: `0 0 20px ${myTeamColor}80, 0 4px 0 rgba(0,0,0,0.4)`,
-                }}
-              >
-                ⚡ أنا أعرف!
-              </button>
-            )}
-
-            {!isHost && mayBuzz && buzzPressed && (
-              <div
-                className="text-center py-4 px-6 rounded-xl font-black text-lg"
-                style={{ color: myTeamColor, background: `${myTeamColor}15`, border: `1px solid ${myTeamColor}40` }}
-              >
-                ⏳ في انتظار الخادم...
-              </div>
-            )}
-
-            {(isHost || (!mayBuzz && !buzzPressed)) && (
-              <div
-                className="text-center py-3 px-5 rounded-xl text-sm font-bold"
-                style={{ color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.04)' }}
-              >
-                {isHost ? '👁 المقدم — مشاهدة' : buzzerTeam ? `🎯 الفريق ${buzzerTeamLabel} ينتظر للإجابة...` : '⏳ انتظر...'}
-              </div>
-            )}
+            <p className="text-xs font-semibold" style={{ color: 'rgba(255,255,255,0.45)' }}>
+              {teamLabel(currentTeam)}
+            </p>
           </div>
-        )}
 
-        {/* ─── طور BUZZER_OPEN ─── */}
-        {isOpenPhase && (() => {
-          const effectiveRevealed = (correctIndex !== null || answerLocked) ? options.length : revealedCount;
-          const allRevealed = effectiveRevealed >= options.length;
-          return (
-            <>
-              {/* إعلان الوقت المفتوح */}
-              <div
-                className="text-center py-2 px-4 rounded-xl mb-3"
-                style={{ background: 'rgba(0,255,127,0.06)', border: '1px solid rgba(0,255,127,0.2)' }}
-              >
-                <p className="text-sm font-black" style={{ color: '#00FF7F', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
-                  ⚡ وقت مفتوح! الفريق {buzzerTeamLabel} لم يجب
-                </p>
-                <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>
-                  الفريق <span style={{ color: openTeamColor, fontWeight: 'bold' }}>{openTeamLabel}</span> — {allRevealed ? 'أجب الآن!' : 'تظهر الخيارات...'}
-                </p>
-              </div>
-
-              {/* شريط المؤقت — يظهر فقط بعد اكتمال الخيارات */}
-              {allRevealed && (
-                <>
-                  <div
-                    className="h-2 rounded-full mb-2 overflow-hidden"
-                    style={{ background: 'rgba(255,255,255,0.06)' }}
-                  >
-                    <div
-                      className="h-full rounded-full"
-                      style={{
-                        width: `${timerPercent}%`,
-                        background: `linear-gradient(90deg, ${timerColor}, ${timerColor}80)`,
-                        boxShadow: `0 0 6px ${timerColor}`,
-                        transition: 'width 0.25s linear',
-                      }}
-                    />
-                  </div>
-                  <div
-                    className="text-center text-2xl font-black mb-3"
-                    style={{
-                      color: timerColor,
-                      textShadow: `0 0 10px ${timerColor}`,
-                      fontFamily: 'Courier New, monospace',
-                    }}
-                  >
-                    {timeLeft}
-                  </div>
-                </>
-              )}
-
-              {/* الخيارات بظهور تدريجي */}
-              {(canAnswer || selected !== null || correctIndex !== null || !allRevealed) ? (
-                <div className="grid grid-cols-1 gap-2">
-                  {options.map((opt, i) => {
-                    const isRevealed = i < effectiveRevealed;
-                    return (
-                      <div
-                        key={i}
-                        style={{
-                          transition: 'opacity 0.35s ease, transform 0.35s ease',
-                          opacity: isRevealed ? 1 : 0,
-                          transform: isRevealed ? 'translateY(0)' : 'translateY(10px)',
-                        }}
-                      >
-                        <button
-                          onClick={() => isRevealed && handleAnswer(i)}
-                          disabled={!canAnswer || !isRevealed}
-                          className={getOptionStyle(i, selected, correctIndex, answerLocked, timeLeft, canAnswer && isRevealed)}
-                        >
-                          <span className="font-black ml-2 text-sm" style={{ color: '#C9A227' }}>
-                            {['أ', 'ب', 'ج', 'د'][i]}.
-                          </span>
-                          {opt}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div
-                  className="text-center py-4 px-5 rounded-xl"
-                  style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
-                >
-                  {isHost ? (
-                    <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>👁 المقدم — مشاهدة</p>
-                  ) : (
-                    <p className="font-black text-base" style={{ color: openTeamColor }}>
-                      🎯 الفريق {openTeamLabel} يجيب الآن...
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {answerLocked && (
-                <p className="text-center text-sm font-black mt-4"
-                  style={{ color: '#69F0AE', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
-                  ✓ تم تسجيل الإجابة الصحيحة!
-                </p>
-              )}
-            </>
-          );
-        })()}
-
-        {/* ─── طور ANSWERING ─── */}
-        {phase === 'ANSWERING' && (
-          <>
-            {/* شريط المؤقت — أحمر متوتر */}
+          {/* Timer badge */}
+          {isAnsweringPhase && (
             <div
-              className="h-2 rounded-full mb-2 overflow-hidden"
-              style={{ background: 'rgba(255,255,255,0.06)' }}
-            >
-              <div
-                className="h-full rounded-full"
-                style={{
-                  width: `${timerPercent}%`,
-                  background: `linear-gradient(90deg, ${timerColor}, ${timerColor}80)`,
-                  boxShadow: `0 0 6px ${timerColor}${timeLeft <= 3 ? ', 0 0 12px ' + timerColor : ''}`,
-                  transition: 'width 0.25s linear',
-                }}
-              />
-            </div>
-            <div
-              className="text-center font-black mb-3"
+              className="w-12 h-12 rounded-xl flex items-center justify-center text-xl font-black"
               style={{
-                fontSize: timeLeft <= 3 ? '2rem' : '1.5rem',
-                color: timerColor,
-                textShadow: `0 0 ${timeLeft <= 3 ? '16px' : '10px'} ${timerColor}`,
-                fontFamily: 'Courier New, monospace',
-                transition: 'font-size 0.2s, color 0.2s',
+                background: timeLeft <= 5 ? 'rgba(255,44,44,0.3)' : 'rgba(255,255,255,0.07)',
+                color: timeLeft <= 5 ? '#FF4444' : 'rgba(255,255,255,0.8)',
+                border: `1.5px solid ${timeLeft <= 5 ? 'rgba(255,44,44,0.5)' : 'rgba(255,255,255,0.1)'}`,
               }}
             >
               {timeLeft}
             </div>
+          )}
+          {isBuzzerPhase && buzzerCanBuzz && (
+            <div
+              className="w-12 h-12 rounded-xl flex items-center justify-center text-xl font-black"
+              style={{
+                background: buzzerCountdown <= 5 ? 'rgba(255,44,44,0.3)' : 'rgba(255,255,255,0.07)',
+                color: buzzerCountdown <= 5 ? '#FF4444' : 'rgba(255,255,255,0.8)',
+                border: `1.5px solid ${buzzerCountdown <= 5 ? 'rgba(255,44,44,0.5)' : 'rgba(255,255,255,0.1)'}`,
+              }}
+            >
+              {buzzerCountdown}
+            </div>
+          )}
+        </div>
 
-            {canAnswer || (selected !== null) || (correctIndex !== null) ? (
-              <div className="grid grid-cols-1 gap-2">
-                {options.map((opt, i) => (
-                  <button
-                    key={i}
-                    onClick={() => handleAnswer(i)}
-                    disabled={!canAnswer}
-                    className={getOptionStyle(i, selected, correctIndex, answerLocked, timeLeft, canAnswer)}
-                  >
-                    <span className="font-black ml-2 text-sm" style={{ color: '#C9A227' }}>
-                      {['أ', 'ب', 'ج', 'د'][i]}.
-                    </span>
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div
-                className="text-center py-4 px-5 rounded-xl"
-                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+        {/* Question text */}
+        <p className="text-lg font-bold text-center leading-snug" style={{ color: 'rgba(255,255,255,0.92)' }}>
+          {text}
+        </p>
+
+        {/* Show answer when no one buzzed */}
+        {correctIndex !== null && !isAnsweringPhase && (
+          <div
+            className="rounded-xl p-3 text-center"
+            style={{ background: 'rgba(0,255,127,0.08)', border: '1.5px solid rgba(0,255,127,0.3)' }}
+          >
+            <p className="text-sm font-bold" style={{ color: '#00FF7F' }}>
+              📖 الإجابة الصحيحة هي: {options[correctIndex]}
+            </p>
+          </div>
+        )}
+
+        {/* Options */}
+        <div className="flex flex-col gap-2">
+          {options.map((opt, i) => {
+            // In buzzer/tiebreaker phase, reveal options gradually
+            const isVisible = isBuzzerPhase ? i < revealedCount : true;
+
+            if (!isVisible) {
+              return (
+                <div
+                  key={i}
+                  className="rounded-xl p-3"
+                  style={{
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1.5px dashed rgba(255,255,255,0.1)',
+                    minHeight: '44px',
+                  }}
+                />
+              );
+            }
+
+            const style = getOptionStyle(i, correctIndex, answerLocked, isRevealPhase);
+            const canAnswer = isAnsweringPhase && !answerLocked && !isHost && myTeam === buzzerTeam;
+            const canAnswerOpen = isOpenPhase && !answerLocked && !isHost;
+
+            return (
+              <button
+                key={i}
+                onClick={() => (canAnswer || canAnswerOpen) ? onAnswer(i) : undefined}
+                disabled={!(canAnswer || canAnswerOpen)}
+                className="rounded-xl p-3 text-right font-semibold text-sm transition-all duration-200"
+                style={{
+                  ...style,
+                  cursor: (canAnswer || canAnswerOpen) ? 'pointer' : 'default',
+                  opacity: isVisible ? 1 : 0,
+                  transform: isVisible ? 'translateX(0)' : 'translateX(20px)',
+                  transition: 'opacity 0.4s ease, transform 0.4s ease',
+                }}
               >
-                {buzzerTeam ? (
-                  <p className="font-black text-base" style={{ color: buzzerTeam === 'RED' ? '#FF4444' : '#00FF7F' }}>
-                    🎯 الفريق {buzzerTeamLabel} يجيب...
-                  </p>
-                ) : (
-                  <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>انتظر...</p>
-                )}
-              </div>
-            )}
+                <span style={{ color: 'rgba(255,255,255,0.4)', marginLeft: '8px' }}>
+                  {String.fromCharCode(0x0041 + i)}.
+                </span>{' '}
+                {opt}
+              </button>
+            );
+          })}
+        </div>
 
-            {answerLocked && (
-              <p className="text-center text-sm font-black mt-4"
-                style={{ color: '#69F0AE', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
-                ✓ تم تسجيل الإجابة الصحيحة!
+        {/* Buzz-in button (BUZZER / TIEBREAKER phases, after options revealed) */}
+        {isBuzzerPhase && buzzerCanBuzz && mayBuzz && !buzzerTeam && (
+          <button
+            onClick={onBuzzIn}
+            className="w-full py-4 rounded-xl font-black text-lg tracking-wide transition-all duration-150 active:scale-95"
+            style={{
+              background: myTeam === 'RED' ? 'rgba(255,44,44,0.2)' : 'rgba(0,255,127,0.15)',
+              border: `2px solid ${myTeam === 'RED' ? 'rgba(255,44,44,0.7)' : 'rgba(0,255,127,0.6)'}`,
+              color: myTeam === 'RED' ? '#FF6666' : '#00FF7F',
+              boxShadow: `0 0 20px ${myTeam === 'RED' ? 'rgba(255,44,44,0.25)' : 'rgba(0,255,127,0.2)'}`,
+            }}
+          >
+            🔔 أعرف الإجابة!
+          </button>
+        )}
+
+        {/* Showing who buzzed in */}
+        {isBuzzerPhase && buzzerTeam && !isAnsweringPhase && (
+          <div
+            className="rounded-xl p-3 text-center"
+            style={{
+              background: buzzerTeam === 'RED' ? 'rgba(255,44,44,0.1)' : 'rgba(0,255,127,0.08)',
+              border: `1.5px solid ${teamColor(buzzerTeam)}40`,
+            }}
+          >
+            <p className="text-sm font-bold" style={{ color: teamColor(buzzerTeam) }}>
+              {teamLabel(buzzerTeam)} ضغط الجرس!
+            </p>
+          </div>
+        )}
+
+        {/* ANSWERING: waiting for host to accept/reject or contestant to answer */}
+        {isAnsweringPhase && buzzerTeam && (
+          <div
+            className="rounded-xl p-3 text-center"
+            style={{
+              background: buzzerTeam === 'RED' ? 'rgba(255,44,44,0.1)' : 'rgba(0,255,127,0.08)',
+              border: `1.5px solid ${teamColor(buzzerTeam)}40`,
+            }}
+          >
+            <p className="text-sm font-bold" style={{ color: teamColor(buzzerTeam) }}>
+              {teamLabel(buzzerTeam)} يجيب الآن
+            </p>
+            {isHost && (
+              <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                في انتظار الإجابة...
               </p>
             )}
-            {isHost && (
-              <p className="text-center text-eid-sand/30 mt-3 text-xs tracking-wide">المقدم — مشاهدة فقط</p>
-            )}
-          </>
+          </div>
+        )}
+
+        {/* BUZZER_OPEN phase info */}
+        {isOpenPhase && openAnswerTeam && (
+          <div
+            className="rounded-xl p-3 text-center"
+            style={{
+              background: openAnswerTeam === 'RED' ? 'rgba(255,44,44,0.1)' : 'rgba(0,255,127,0.08)',
+              border: `1.5px solid ${teamColor(openAnswerTeam)}40`,
+            }}
+          >
+            <p className="text-sm font-bold" style={{ color: teamColor(openAnswerTeam) }}>
+              {teamLabel(openAnswerTeam)} يجيب — فرصة أخيرة
+            </p>
+          </div>
         )}
       </div>
     </div>
@@ -421,19 +337,37 @@ export function QuestionModal({
 }
 
 function getOptionStyle(
-  i: number,
-  selected: number | null,
+  index: number,
   correctIndex: number | null,
   answerLocked: boolean,
-  timeLeft: number,
-  canAnswer: boolean
-): string {
-  if (correctIndex !== null && (answerLocked || timeLeft === 0)) {
-    if (i === correctIndex) return 'option-btn correct';
-    if (i === selected && i !== correctIndex) return 'option-btn wrong';
-    return 'option-btn opacity-40 cursor-not-allowed';
+  isRevealPhase: boolean,
+): React.CSSProperties {
+  if (isRevealPhase && correctIndex !== null) {
+    if (index === correctIndex) {
+      return {
+        background: 'rgba(0,255,127,0.15)',
+        border: '1.5px solid rgba(0,255,127,0.6)',
+        color: '#00FF7F',
+      };
+    }
+    return {
+      background: 'rgba(255,255,255,0.03)',
+      border: '1.5px solid rgba(255,255,255,0.08)',
+      color: 'rgba(255,255,255,0.35)',
+    };
   }
-  if (i === selected) return 'option-btn selected';
-  if (canAnswer) return 'option-btn cursor-pointer';
-  return 'option-btn opacity-60 cursor-not-allowed';
+
+  if (answerLocked) {
+    return {
+      background: 'rgba(255,255,255,0.05)',
+      border: '1.5px solid rgba(255,255,255,0.1)',
+      color: 'rgba(255,255,255,0.5)',
+    };
+  }
+
+  return {
+    background: 'rgba(255,255,255,0.06)',
+    border: '1.5px solid rgba(255,255,255,0.12)',
+    color: 'rgba(255,255,255,0.85)',
+  };
 }

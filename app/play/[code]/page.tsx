@@ -12,7 +12,7 @@ import { Leaderboard, type LeaderboardData } from '../../components/Leaderboard'
 import { HostDashboard } from '../../components/HostDashboard';
 import { SoundEngine } from '@/lib/soundEngine';
 
-type GamePhase = 'CELL_SELECTION' | 'BUZZER' | 'BUZZER_SECOND_CHANCE' | 'BUZZER_OPEN' | 'ANSWERING' | 'ANSWER_REVEAL' | 'ROUND_OVER' | 'GAME_OVER' | 'DAIRAT_AL_DAW';
+type GamePhase = 'CELL_SELECTION' | 'BUZZER' | 'BUZZER_SECOND_CHANCE' | 'BUZZER_OPEN' | 'ANSWERING' | 'ANSWER_REVEAL' | 'ROUND_OVER' | 'GAME_OVER' | 'DAIRAT_AL_DAW' | 'TIEBREAKER';
 type PagePhase = 'loading' | GamePhase;
 
 interface QuestionInfo {
@@ -69,6 +69,13 @@ export default function PlayPage() {
   const [isPaused, setIsPaused] = useState(false);
   const [openRevealStartTime, setOpenRevealStartTime] = useState<number | null>(null);
   const [openNoAnswer, setOpenNoAnswer] = useState<{ correctIndex: number; currentTeam: TeamColor } | null>(null);
+  // Timing for progressive reveal (BUZZER / TIEBREAKER)
+  const [optionRevealTime, setOptionRevealTime] = useState<number | null>(null);
+  const [buzzerOpenTime, setBuzzerOpenTime] = useState<number | null>(null);
+  // Tiebreaker
+  const [tiebreakerEnded, setTiebreakerEnded] = useState<{ winnerTeam: TeamColor; randomPick?: boolean; correctIndex: number } | null>(null);
+  // Rules screen
+  const [showRules, setShowRules] = useState(false);
   const [players, setPlayers] = useState<Array<{ id: string; name: string; isConnected: boolean; team: TeamColor | null; status: 'active' | 'away' }>>([]);
   const openNoAnswerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -83,14 +90,22 @@ export default function PlayPage() {
   }, [code]);
 
   const handleSubmitAnswer = useCallback((index: number) => {
-    getSocket().emit('submit_answer', { roomCode: code, answerIndex: index });
-  }, [code]);
+    if (phase === 'TIEBREAKER') {
+      getSocket().emit('submit_tiebreaker_answer', { roomCode: code, answerIndex: index });
+    } else {
+      getSocket().emit('submit_answer', { roomCode: code, answerIndex: index });
+    }
+  }, [code, phase]);
 
   const handleBuzzIn = useCallback(() => {
     SoundEngine.play('buzz');
     SoundEngine.vibrate([100]);
-    getSocket().emit('buzz_in', { roomCode: code });
-  }, [code]);
+    if (phase === 'TIEBREAKER') {
+      getSocket().emit('buzz_in_tiebreaker', { roomCode: code });
+    } else {
+      getSocket().emit('buzz_in', { roomCode: code });
+    }
+  }, [code, phase]);
 
   const handleNextRound = useCallback(() => {
     getSocket().emit('next_round', { roomCode: code });
@@ -136,6 +151,8 @@ export default function PlayPage() {
       setOpenRevealStartTime(null);
       setGoldenCell(null);
       setTimerMaxSec(30);
+      setOptionRevealTime(null);
+      setBuzzerOpenTime(null);
     };
 
     // --- JOIN ---
@@ -180,6 +197,8 @@ export default function PlayPage() {
         const me = data.players.find((p: any) => p.id === myIdRef.current);
         if (me?.team) setMyTeam(me.team);
       }
+      // Show rules screen at game start
+      setShowRules(true);
     });
 
     // --- CELL SELECTED ---
@@ -193,7 +212,7 @@ export default function PlayPage() {
         letter: data.letter,
         text: data.text,
         options: data.options,
-        endTime: 0,
+        endTime: data.endTime ?? 0,
         col: data.col,
         row: data.row,
       });
@@ -204,6 +223,8 @@ export default function PlayPage() {
       setBuzzerTeam(null);
       setOpenAnswerTeam(null);
       setTimerMaxSec(30);
+      setOptionRevealTime(data.optionRevealTime ?? null);
+      setBuzzerOpenTime(data.buzzerOpenTime ?? null);
     });
 
     // --- GOLDEN CELL ANNOUNCED ---
@@ -216,7 +237,9 @@ export default function PlayPage() {
     // --- BUZZ CONFIRMED ---
     socket.on('buzz_confirmed', (data: any) => {
       setBuzzerTeam(data.team);
-      setPhase('ANSWERING');
+      if (!data.isTiebreaker) {
+        setPhase('ANSWERING');
+      }
       setTimerMaxSec(data.timeLimit ?? 10);
       setQuestion(prev => prev ? { ...prev, endTime: data.endTime } : prev);
     });
@@ -291,6 +314,52 @@ export default function PlayPage() {
       setBuzzerTeam(null);
       setAnswerLocked(false);
       setQuestion(prev => prev ? { ...prev, endTime: 0 } : prev);
+    });
+
+    // --- BUZZER TIMEOUT: no buzz — reveal answer then move on ---
+    socket.on('answer_revealed_no_buzz', ({ correctIndex: ci }: any) => {
+      setCorrectIndex(ci);
+      setAnswerLocked(false); // show answer but don't mark as answered correctly
+      SoundEngine.play('wrong');
+    });
+
+    // --- TIEBREAKER events ---
+    socket.on('tiebreaker_question', (data: any) => {
+      setPhase('TIEBREAKER');
+      setQuestion({
+        letter: data.letter,
+        text: data.text,
+        options: data.options,
+        endTime: data.endTime ?? 0,
+        col: -1,
+        row: -1,
+      });
+      setAnswerLocked(false);
+      setCorrectIndex(null);
+      setCorrectPlayerName(null);
+      setBuzzerTeam(null);
+      setOptionRevealTime(data.optionRevealTime ?? null);
+      setBuzzerOpenTime(data.buzzerOpenTime ?? null);
+      setTiebreakerEnded(null);
+    });
+
+    socket.on('tiebreaker_wrong', () => {
+      // Other team gets a chance — remain in TIEBREAKER
+      setBuzzerTeam(null);
+      setAnswerLocked(false);
+    });
+
+    socket.on('tiebreaker_skip', ({ currentTeam: ct }: any) => {
+      setPhase('CELL_SELECTION');
+      setCurrentTeam(ct);
+      clearQuestion();
+    });
+
+    socket.on('tiebreaker_end', ({ winnerTeam, correctIndex: ci, randomPick }: any) => {
+      setCorrectIndex(ci >= 0 ? ci : null);
+      setAnswerLocked(true);
+      setTiebreakerEnded({ winnerTeam, randomPick, correctIndex: ci });
+      SoundEngine.play('correct');
     });
 
     // --- HOST: BUZZER_OPEN timed out with no answer ---
@@ -451,6 +520,8 @@ export default function PlayPage() {
         'host_changed', 'error',
         'buzz_cancelled', 'buzzer_open_no_answer', 'game_paused', 'game_resumed',
         'score_adjusted', 'player_status_changed', 'player_update', 'kicked',
+        'answer_revealed_no_buzz',
+        'tiebreaker_question', 'tiebreaker_wrong', 'tiebreaker_skip', 'tiebreaker_end',
       ];
       events.forEach(e => socket.off(e));
     };
@@ -570,6 +641,30 @@ export default function PlayPage() {
 
   return (
     <main className="min-h-dvh flex flex-col px-2 py-2 max-w-2xl mx-auto" style={{ paddingBottom: isHost ? '7rem' : undefined }} dir="rtl">
+
+      {/* Rules screen — shown once at game start */}
+      {showRules && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.92)' }}>
+          <div className="card text-center max-w-sm w-full animate-fade-in" style={{ border: '2px solid rgba(201,162,39,0.5)', direction: 'rtl' }}>
+            <div className="huroof-logo text-3xl font-black mb-2" style={{ letterSpacing: '0.2em' }}>حروف</div>
+            <p className="text-sm font-black tracking-widest mb-4" style={{ color: '#C9A227' }}>— طريقة اللعب —</p>
+            <ul className="text-sm text-right space-y-2 mb-6" style={{ color: 'rgba(255,255,255,0.75)' }}>
+              <li>🏆 <strong>الهدف:</strong> ربط خلايا بالحروف من جانبٍ لآخر.</li>
+              <li>🎯 <strong>سؤال البداية:</strong> يبدأ بسؤال عشوائي — الفريق الفائز يختار الحرف الأول.</li>
+              <li>▶ <strong>الدور:</strong> الفريق الذي يُجيب صحيحاً يختار الحرف التالي.</li>
+              <li>⚡ <strong>المزامير:</strong> يظهر السؤال أولاً، ثم الخيارات تدريجياً، ثم عداد 30 ثانية.</li>
+              <li>📖 <strong>لا أحد أجاب:</strong> تُعلن الإجابة وينتقل الدور.</li>
+              <li>🌟 <strong>الخلية الذهبية:</strong> خلية سرية تعطي نقطة إضافية.</li>
+            </ul>
+            <button
+              onClick={() => setShowRules(false)}
+              className="btn-primary w-full"
+            >
+              فهمت — ابدأ! ▶
+            </button>
+          </div>
+        </div>
+      )}
       {/* Pause banner */}
       {isPaused && (
         <div
@@ -667,8 +762,8 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Question Modal — shown in BUZZER, BUZZER_SECOND_CHANCE, BUZZER_OPEN, ANSWERING, or when correctIndex revealed */}
-      {question && (phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE' || phase === 'BUZZER_OPEN' || phase === 'ANSWERING' || correctIndex !== null) && (
+      {/* Question Modal — shown in BUZZER, BUZZER_SECOND_CHANCE, BUZZER_OPEN, ANSWERING, TIEBREAKER, or when correctIndex revealed */}
+      {question && (phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE' || phase === 'BUZZER_OPEN' || phase === 'ANSWERING' || phase === 'TIEBREAKER' || correctIndex !== null) && (
         <QuestionModal
           letter={question.letter}
           text={question.text}
@@ -684,10 +779,38 @@ export default function PlayPage() {
           buzzerTeam={buzzerTeam}
           openAnswerTeam={openAnswerTeam}
           openRevealStartTime={openRevealStartTime}
+          optionRevealTime={optionRevealTime}
+          buzzerOpenTime={buzzerOpenTime}
           mayBuzz={!isHost && myTeam !== null && myTeam !== buzzerTeam && phase !== 'BUZZER_OPEN'}
+          isTiebreaker={phase === 'TIEBREAKER'}
           onAnswer={handleSubmitAnswer}
           onBuzzIn={handleBuzzIn}
         />
+      )}
+
+      {/* Tiebreaker ended — announce winner before CELL_SELECTION */}
+      {tiebreakerEnded && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.85)' }}>
+          <div className="card text-center max-w-sm w-full animate-fade-in" style={{ border: `2px solid rgba(201,162,39,0.6)` }}>
+            <p className="text-sm font-bold tracking-widest mb-3" style={{ color: '#C9A227' }}>
+              🏆 نتيجة سؤال البداية
+            </p>
+            {tiebreakerEnded.randomPick ? (
+              <p className="text-base mb-2" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                لم يُجب أحد — سيتم الاختيار عشوائياً
+              </p>
+            ) : null}
+            <p className="text-2xl font-black mb-4" style={{
+              color: tiebreakerEnded.winnerTeam === 'RED' ? '#FF4444' : '#00FF7F',
+              textShadow: `0 0 15px ${tiebreakerEnded.winnerTeam === 'RED' ? 'rgba(255,44,44,0.7)' : 'rgba(0,255,127,0.7)'}`,
+            }}>
+              {tiebreakerEnded.winnerTeam === 'RED' ? '🔴 الفريق الأحمر' : '🟢 الفريق الأخضر'}
+              <br />
+              <span className="text-base font-semibold">يختار أول حرف!</span>
+            </p>
+            <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>ستبدأ اللعبة تلقائياً...</p>
+          </div>
+        </div>
       )}
 
       {/* openNoAnswer: host can manually continue */}
@@ -755,7 +878,7 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Host Dashboard */}
+      {/* Host Dashboard — always visible for host */}
       {isHost && (
         <HostDashboard
           roomCode={code}

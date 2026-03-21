@@ -32,6 +32,12 @@ const BUZZER_OPEN_REVEAL_MS  = 5000;    // 2s intro + 3×1s for each option
 const BUZZER_OPEN_TOTAL_MS   = BUZZER_OPEN_REVEAL_MS + BUZZER_OPEN_MS; // 35s total server window
 const ROUNDS_TO_WIN = 3;
 const ANSWER_REVEAL_MS = 1500;
+// Timing for the new reveal-then-buzz flow:
+const REVEAL_DELAY_MS   = 2000;  // question shown 2s before options start appearing
+const REVEAL_PER_OPT_MS = 1000;  // one option revealed per second (4 options → 4s)
+const REVEAL_TOTAL_MS   = REVEAL_DELAY_MS + 4 * REVEAL_PER_OPT_MS; // 6s total
+const BUZZER_WAIT_MS    = 30000; // countdown starts after all options are revealed
+const BUZZER_TOTAL_MS   = REVEAL_TOTAL_MS + BUZZER_WAIT_MS;
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -44,7 +50,8 @@ type GamePhase =
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
   | 'GAME_OVER'
-  | 'DAIRAT_AL_DAW';
+  | 'DAIRAT_AL_DAW'
+  | 'TIEBREAKER';          // opening question — winner picks first cell
 
 interface PlayerState {
   id: string;
@@ -82,6 +89,7 @@ interface HexGameState {
     options: string[];
     correctIndex: number;
     endTime: number;
+    buzzerOpenTime?: number;  // when the 30s countdown starts (after options revealed)
   } | null;
   answerLocked: boolean;
   questionTimer: ReturnType<typeof setTimeout> | null;
@@ -98,6 +106,7 @@ interface HexGameState {
   isPaused: boolean;                     // host paused the game
   pausedAt: number | null;               // timestamp when paused
   pausedTimeRemaining: number;           // ms left on the timer when paused
+  lastCellWinner: TeamColor | null;       // team that answered last correct (selects next cell)
 }
 
 // ─── In-memory state ──────────────────────────────────────────
@@ -201,14 +210,14 @@ export function initGameEngine(io: Server) {
         socket.emit('room_joined', { playerId: player.id, isHost, players: playersData, gameStatus: session.status, phase: game?.phase ?? null });
 
         if (isReconnect && game) {
-          const isBuzzerPhase = game.phase === 'BUZZER' || game.phase === 'BUZZER_SECOND_CHANCE';
+          const isBuzzerPhase = game.phase === 'BUZZER' || game.phase === 'BUZZER_SECOND_CHANCE' || game.phase === 'TIEBREAKER';
           socket.emit('grid_sync', {
             grid: buildGridArray(game), gridVersion: game.gridVersion, phase: game.phase,
             currentTeam: game.currentTeam, currentRound: game.currentRound, roundWins: game.roundWins, winningPath: game.winningPath,
             activeQuestion: (game.phase === 'ANSWERING' && game.activeQuestion)
               ? { letter: game.activeQuestion.letter, text: game.activeQuestion.text, options: game.activeQuestion.options, endTime: game.activeQuestion.endTime, col: game.selectedCell?.col, row: game.selectedCell?.row }
               : (isBuzzerPhase && game.activeQuestion)
-              ? { letter: game.activeQuestion.letter, text: game.activeQuestion.text, options: game.activeQuestion.options, col: game.selectedCell?.col, row: game.selectedCell?.row }
+              ? { letter: game.activeQuestion.letter, text: game.activeQuestion.text, options: game.activeQuestion.options, endTime: game.activeQuestion.endTime, buzzerOpenTime: game.activeQuestion.buzzerOpenTime, col: game.selectedCell?.col, row: game.selectedCell?.row }
               : (game.phase === 'BUZZER_OPEN' && game.activeQuestion)
               ? { letter: game.activeQuestion.letter, text: game.activeQuestion.text, options: game.activeQuestion.options, endTime: game.activeQuestion.endTime, col: game.selectedCell?.col, row: game.selectedCell?.row }
               : null,
@@ -265,7 +274,7 @@ export function initGameEngine(io: Server) {
 
         const game: HexGameState = {
           sessionId: session.id, hostPlayerId: session.hostId!,
-          phase: 'CELL_SELECTION', currentRound: 1, roundWins: { RED: 0, GREEN: 0 }, currentTeam: 'RED',
+          phase: 'TIEBREAKER', currentRound: 1, roundWins: { RED: 0, GREEN: 0 }, currentTeam: 'RED',
           grid: initialGrid, gridVersion: 0,
           redTeam: new Set(redPlayers.map(p => p.id)), greenTeam: new Set(greenPlayers.map(p => p.id)),
           selectedCell: null, activeQuestion: null, answerLocked: false, questionTimer: null,
@@ -273,11 +282,129 @@ export function initGameEngine(io: Server) {
           buzzerTeam: null, buzzerLockedTeams: new Set(),
           buzzerPlayerId: null, goldenCellKey, currentQuestionStartTime: 0,
           isPaused: false, pausedAt: null, pausedTimeRemaining: 0,
+          lastCellWinner: null,
         };
         activeGames.set(roomCode, game);
         await prisma.gameSession.update({ where: { id: session.id }, data: { status: 'PLAYING' } });
-        io.to(roomCode).emit('game_start', { phase: game.phase, grid: buildGridArray(game), currentTeam: game.currentTeam, round: game.currentRound, roundWins: game.roundWins, gridVersion: game.gridVersion, players: buildPlayersPayload(game) });
+
+        // Fire a TIEBREAKER question — whoever answers correctly picks the first cell
+        const tbLetterIdx = Math.floor(Math.random() * letters.length);
+        const tbLetter = letters[tbLetterIdx];
+        const tbQuestion = pickQuestion(tbLetter, questionsByLetter, game.usedQuestions);
+
+        const tbNow = Date.now();
+        const tbRevealTime = tbNow + REVEAL_DELAY_MS;           // options start appearing
+        const tbBuzzerOpenTime = tbNow + REVEAL_TOTAL_MS;       // countdown visible
+        const tbEndTime = tbNow + BUZZER_TOTAL_MS;              // auto-timeout
+
+        if (tbQuestion) {
+          game.activeQuestion = { id: tbQuestion.id, letter: tbLetter, text: tbQuestion.text, options: tbQuestion.options, correctIndex: tbQuestion.correctIndex, endTime: tbEndTime };
+          game.currentQuestionStartTime = 0;
+          game.questionTimer = setTimeout(() => handleTiebreakerTimeout(io, roomCode), BUZZER_TOTAL_MS);
+        }
+
+        io.to(roomCode).emit('game_start', {
+          phase: game.phase, grid: buildGridArray(game), currentTeam: game.currentTeam,
+          round: game.currentRound, roundWins: game.roundWins, gridVersion: game.gridVersion,
+          players: buildPlayersPayload(game),
+        });
+
+        if (tbQuestion) {
+          io.to(roomCode).emit('tiebreaker_question', {
+            letter: tbLetter, text: tbQuestion.text, options: tbQuestion.options,
+            optionRevealTime: tbRevealTime, buzzerOpenTime: tbBuzzerOpenTime, endTime: tbEndTime,
+          });
+        } else {
+          // No tiebreaker question available — start directly
+          game.phase = 'CELL_SELECTION';
+          game.currentTeam = 'RED';
+          game.activeQuestion = null;
+          io.to(roomCode).emit('tiebreaker_skip', { currentTeam: 'RED' });
+        }
       } catch (err) { console.error('start_game error:', err); socket.emit('error', { message: 'حدث خطأ أثناء بدء اللعبة' }); }
+    });
+
+    // ─── Tiebreaker buzz ────────────────────────────────────────
+    socket.on('buzz_in_tiebreaker', ({ roomCode }: { roomCode: string }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game || game.phase !== 'TIEBREAKER' || game.answerLocked) return;
+      if (game.isPaused) return;
+      if (playerId === game.hostPlayerId) return;
+
+      const playerTeam: TeamColor | null = game.redTeam.has(playerId) ? 'RED'
+        : game.greenTeam.has(playerId) ? 'GREEN' : null;
+      if (!playerTeam || game.buzzerLockedTeams.has(playerTeam)) return;
+
+      if (game.questionTimer) clearTimeout(game.questionTimer);
+      const playerState = game.players.get(playerId);
+      const endTime = Date.now() + BUZZER_ANSWER_MS;
+      game.phase = 'ANSWERING';
+      game.buzzerTeam = playerTeam;
+      game.buzzerLockedTeams.add(playerTeam);
+      game.buzzerPlayerId = playerId;
+      game.answerLocked = false;
+      game.currentQuestionStartTime = Date.now();
+      game.activeQuestion!.endTime = endTime;
+      game.questionTimer = setTimeout(() => handleTiebreakerAnswerTimeout(io, roomCode), BUZZER_ANSWER_MS);
+      io.to(roomCode).emit('buzz_confirmed', {
+        team: playerTeam,
+        playerName: playerState?.name ?? '',
+        endTime,
+        timeLimit: BUZZER_ANSWER_MS / 1000,
+        isTiebreaker: true,
+      });
+    });
+
+    socket.on('submit_tiebreaker_answer', ({ roomCode, answerIndex }: { roomCode: string; answerIndex: number }) => {
+      const playerId = socket.data.playerId as string;
+      const game = activeGames.get(roomCode);
+      if (!game || game.phase !== 'ANSWERING' || game.answerLocked || !game.activeQuestion) return;
+      if (!game.buzzerTeam) return;
+      const teamSet = game.buzzerTeam === 'RED' ? game.redTeam : game.greenTeam;
+      if (!teamSet.has(playerId)) return;
+
+      const isCorrect = answerIndex === game.activeQuestion.correctIndex;
+      game.answerLocked = true;
+      if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
+
+      if (isCorrect) {
+        const winnerTeam = game.buzzerTeam;
+        io.to(roomCode).emit('tiebreaker_end', { winnerTeam, correctIndex: game.activeQuestion.correctIndex });
+        setTimeout(() => {
+          const g = activeGames.get(roomCode);
+          if (!g) return;
+          g.phase = 'CELL_SELECTION';
+          g.currentTeam = winnerTeam;
+          g.activeQuestion = null; g.buzzerTeam = null; g.buzzerLockedTeams = new Set();
+          g.buzzerPlayerId = null; g.answerLocked = false;
+          io.to(roomCode).emit('phase_change', { phase: 'CELL_SELECTION', currentTeam: g.currentTeam });
+        }, ANSWER_REVEAL_MS);
+      } else {
+        // Wrong — give other team a chance
+        const otherT = otherTeam(game.buzzerTeam);
+        if (!game.buzzerLockedTeams.has(otherT)) {
+          game.phase = 'TIEBREAKER';
+          game.answerLocked = false;
+          game.buzzerTeam = null; game.buzzerPlayerId = null;
+          const endTime = Date.now() + BUZZER_TOTAL_MS;
+          game.activeQuestion.endTime = endTime;
+          game.questionTimer = setTimeout(() => handleTiebreakerTimeout(io, roomCode), BUZZER_TOTAL_MS);
+          io.to(roomCode).emit('tiebreaker_wrong', { wrongTeam: game.buzzerLockedTeams.values().next().value, correctIndex: -1 });
+        } else {
+          // Both teams failed — pick winner randomly
+          const coin = Math.random() < 0.5 ? 'RED' : 'GREEN';
+          io.to(roomCode).emit('tiebreaker_end', { winnerTeam: coin, correctIndex: game.activeQuestion.correctIndex, randomPick: true });
+          setTimeout(() => {
+            const g = activeGames.get(roomCode);
+            if (!g) return;
+            g.phase = 'CELL_SELECTION'; g.currentTeam = coin;
+            g.activeQuestion = null; g.buzzerTeam = null; g.buzzerLockedTeams = new Set();
+            g.buzzerPlayerId = null; g.answerLocked = false;
+            io.to(roomCode).emit('phase_change', { phase: 'CELL_SELECTION', currentTeam: g.currentTeam });
+          }, ANSWER_REVEAL_MS);
+        }
+      }
     });
 
     socket.on('select_cell', ({ roomCode, col, row }: { roomCode: string; col: number; row: number }) => {
@@ -294,25 +421,35 @@ export function initGameEngine(io: Server) {
       const question = pickQuestion(cell.letter, game.questionsByLetter, game.usedQuestions);
       if (!question) { socket.emit('error', { message: 'لا توجد أسئلة لهذا الحرف' }); return; }
 
-      // Transition to BUZZER phase — no timer yet, waiting for buzz_in
+      // Transition to BUZZER phase — new timing: show question→2s→options 1/sec→then 30s timer
       game.phase = 'BUZZER';
       game.selectedCell = { col, row };
       game.answerLocked = false;
       game.buzzerTeam = null;
       game.buzzerLockedTeams = new Set();
       game.buzzerPlayerId = null;
-      game.activeQuestion = { id: question.id, letter: cell.letter, text: question.text, options: question.options, correctIndex: question.correctIndex, endTime: 0 };
+      game.activeQuestion = { id: question.id, letter: cell.letter, text: question.text, options: question.options, correctIndex: question.correctIndex, endTime: 0, buzzerOpenTime: 0 };
 
-      // Safety timeout: if no one buzzes in 30s, release cell and change turn
+      const now = Date.now();
+      const optionRevealTime = now + REVEAL_DELAY_MS;       // 2s: options start
+      const buzzerOpenTime   = now + REVEAL_TOTAL_MS;       // 6s: countdown visible
+      const endTime          = now + BUZZER_TOTAL_MS;       // 36s: auto timeout
+      game.activeQuestion.endTime = endTime;
+      game.activeQuestion.buzzerOpenTime = buzzerOpenTime;
+
+      // Safety timeout: if no one buzzes
       if (game.questionTimer) clearTimeout(game.questionTimer);
-      game.questionTimer = setTimeout(() => handleBuzzerTimeout(io, roomCode), 30000);
+      game.questionTimer = setTimeout(() => handleBuzzerTimeout(io, roomCode), BUZZER_TOTAL_MS);
 
       const isGoldenCell = game.goldenCellKey === key;
       io.to(roomCode).emit('cell_selected', { col, row, letter: cell.letter, team: game.currentTeam });
       if (isGoldenCell) {
         io.to(roomCode).emit('cell_is_golden', { col, row, letter: cell.letter });
       }
-      io.to(roomCode).emit('buzzer_started', { letter: cell.letter, text: question.text, options: question.options, col, row });
+      io.to(roomCode).emit('buzzer_started', {
+        letter: cell.letter, text: question.text, options: question.options, col, row,
+        optionRevealTime, buzzerOpenTime, endTime,
+      });
     });
 
     socket.on('buzz_in', ({ roomCode }: { roomCode: string }) => {
@@ -322,6 +459,9 @@ export function initGameEngine(io: Server) {
       if (game.isPaused) return;
       if (game.phase !== 'BUZZER' && game.phase !== 'BUZZER_SECOND_CHANCE') return;
       if (playerId === game.hostPlayerId) return;
+
+      // Don't allow buzzing before options are fully revealed
+      if (game.activeQuestion?.buzzerOpenTime && Date.now() < game.activeQuestion.buzzerOpenTime) return;
 
       const playerTeam: TeamColor | null = game.redTeam.has(playerId) ? 'RED'
         : game.greenTeam.has(playerId) ? 'GREEN' : null;
@@ -457,7 +597,9 @@ export function initGameEngine(io: Server) {
             io.to(roomCode).emit('round_over', { winner: cellWinner, roundWins: g.roundWins, winningPath: g.winningPath, leaderboard: buildLeaderboard(g) });
           }
         } else {
-          g.currentTeam = otherTeam(g.currentTeam);
+          // Winner of this question picks next cell
+          g.currentTeam = cellWinner;
+          g.lastCellWinner = cellWinner;
           g.phase = 'CELL_SELECTION';
           g.selectedCell = null;
           g.activeQuestion = null;
@@ -688,6 +830,7 @@ export function initGameEngine(io: Server) {
 
   function releaseCellAndChangeTurn(io: Server, roomCode: string, game: HexGameState, correctIndex: number) {
     if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
+    // When no one answered correctly, alternate turns (no winner to reward)
     game.currentTeam = otherTeam(game.currentTeam);
     game.phase = 'CELL_SELECTION';
     game.selectedCell = null;
@@ -734,7 +877,15 @@ export function initGameEngine(io: Server) {
   function handleBuzzerTimeout(io: Server, roomCode: string) {
     const game = activeGames.get(roomCode);
     if (!game || (game.phase !== 'BUZZER' && game.phase !== 'BUZZER_SECOND_CHANCE')) return;
-    releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion?.correctIndex ?? -1);
+    // No one buzzed — reveal answer to everyone, then after 3s move to next
+    const correctIndex = game.activeQuestion?.correctIndex ?? -1;
+    game.answerLocked = true;
+    io.to(roomCode).emit('answer_revealed_no_buzz', { correctIndex });
+    game.questionTimer = setTimeout(() => {
+      const g = activeGames.get(roomCode);
+      if (!g) return;
+      releaseCellAndChangeTurn(io, roomCode, g, correctIndex);
+    }, 3000);
   }
 
   // Called when ANSWERING timer (10s) expires after buzz_in
@@ -796,6 +947,58 @@ export function initGameEngine(io: Server) {
       }, 10000);
     } else {
       releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion?.correctIndex ?? -1);
+    }
+  }
+
+  function handleTiebreakerTimeout(io: Server, roomCode: string) {
+    const game = activeGames.get(roomCode);
+    if (!game || game.phase !== 'TIEBREAKER') return;
+    // No one buzzed on tiebreaker — pick randomly
+    const coin: TeamColor = Math.random() < 0.5 ? 'RED' : 'GREEN';
+    game.answerLocked = true;
+    io.to(roomCode).emit('answer_revealed_no_buzz', { correctIndex: game.activeQuestion?.correctIndex ?? -1 });
+    game.questionTimer = setTimeout(() => {
+      const g = activeGames.get(roomCode);
+      if (!g) return;
+      io.to(roomCode).emit('tiebreaker_end', { winnerTeam: coin, correctIndex: g.activeQuestion?.correctIndex ?? -1, randomPick: true });
+      setTimeout(() => {
+        const g2 = activeGames.get(roomCode);
+        if (!g2) return;
+        g2.phase = 'CELL_SELECTION'; g2.currentTeam = coin;
+        g2.activeQuestion = null; g2.buzzerTeam = null; g2.buzzerLockedTeams = new Set();
+        g2.buzzerPlayerId = null; g2.answerLocked = false;
+        io.to(roomCode).emit('phase_change', { phase: 'CELL_SELECTION', currentTeam: coin });
+      }, ANSWER_REVEAL_MS);
+    }, 3000);
+  }
+
+  function handleTiebreakerAnswerTimeout(io: Server, roomCode: string) {
+    const game = activeGames.get(roomCode);
+    if (!game || game.phase !== 'ANSWERING' || !game.buzzerTeam) return;
+    // Check if this was a tiebreaker (no selectedCell)
+    if (game.selectedCell) return; // not a tiebreaker
+    const failedTeam = game.buzzerTeam;
+    const otherT = otherTeam(failedTeam);
+    if (!game.buzzerLockedTeams.has(otherT)) {
+      game.phase = 'TIEBREAKER';
+      game.answerLocked = false;
+      game.buzzerTeam = null; game.buzzerPlayerId = null;
+      const endTime = Date.now() + BUZZER_TOTAL_MS;
+      game.activeQuestion!.endTime = endTime;
+      game.questionTimer = setTimeout(() => handleTiebreakerTimeout(io, roomCode), BUZZER_TOTAL_MS);
+      io.to(roomCode).emit('tiebreaker_wrong', { wrongTeam: failedTeam, correctIndex: -1 });
+    } else {
+      // Both missed — random pick
+      const coin: TeamColor = Math.random() < 0.5 ? 'RED' : 'GREEN';
+      io.to(roomCode).emit('tiebreaker_end', { winnerTeam: coin, correctIndex: game.activeQuestion?.correctIndex ?? -1, randomPick: true });
+      setTimeout(() => {
+        const g = activeGames.get(roomCode);
+        if (!g) return;
+        g.phase = 'CELL_SELECTION'; g.currentTeam = coin;
+        g.activeQuestion = null; g.buzzerTeam = null; g.buzzerLockedTeams = new Set();
+        g.buzzerPlayerId = null; g.answerLocked = false;
+        io.to(roomCode).emit('phase_change', { phase: 'CELL_SELECTION', currentTeam: coin });
+      }, ANSWER_REVEAL_MS);
     }
   }
 

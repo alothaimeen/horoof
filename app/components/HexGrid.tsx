@@ -14,7 +14,8 @@ type GamePhase =
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
   | 'GAME_OVER'
-  | 'DAIRAT_AL_DAW';
+  | 'DAIRAT_AL_DAW'
+  | 'TIEBREAKER';
 
 interface HexGridProps {
   cells: HexCellData[];
@@ -146,6 +147,7 @@ export function HexGrid({
         </span>
       </div>
 
+      <div style={{ display: 'flex', justifyContent: 'center' }}>
       <svg
         width={svgW}
         height={svgH}
@@ -259,6 +261,7 @@ export function HexGrid({
           );
         })}
       </svg>
+      </div>
 
       <div className="flex items-center gap-1 mt-1 px-1">
         <span className="text-xs text-green-400 font-bold">↑ الأخضر يصل من الأعلى إلى الأسفل ↓</span>
