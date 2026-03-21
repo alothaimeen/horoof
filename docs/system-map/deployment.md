@@ -3,6 +3,7 @@
 ## الحالة
 - ✅ محلي: جاهز (PostgreSQL 18، npm run dev)
 - ✅ VPS: منشور ويعمل — http://158.220.112.12
+- ✅ التطوير المحلي على Windows صار يفضّل IP شبكة WiFi الحقيقي في روابط الانضمام، و`npm run dev` يستخدم Webpack افتراضياً لتفادي `ChunkLoadError` مع `custom server + basePath`
 
 ---
 
@@ -38,6 +39,7 @@
 
 | الملف | الوظيفة |
 |:---|:---|
+| `server.ts` | Custom server محلي/إنتاج + اختيار IP الشبكة المحلية الحقيقي + تفعيل Turbopack اختيارياً عبر `USE_TURBOPACK=1` |
 | `Dockerfile` | Multi-stage build: base → builder → runner |
 | `docker-compose.yml` | خدمتان: `db` (postgres) + `app` |
 | `nginx.conf` | Nginx على host: proxy لـ localhost:3000 + WebSocket |
@@ -118,6 +120,10 @@ proxy_send_timeout 3600;
 ### ✅ مسموح
 - تحديث كود بدون Docker (git pull + build محلياً)
 - تغيير `QUESTION_DURATION_SECONDS` في `.env` بدون إعادة build
+
+## قرارات مهمة
+
+- في بيئة Windows المحلية مع `custom server` و`basePath: '/horoof'`، المسار الافتراضي للتطوير هو `npm run dev` باستخدام Webpack لأنه أكثر ثباتاً من Turbopack حالياً. إذا لزم الاختبار فقط، استخدم `npm run dev:turbo` بشكل تجريبي.
 
 ### ❌ ممنوع
 - **لا Deploy أثناء جلسة نشطة** — يفقد `activeGames` من الذاكرة

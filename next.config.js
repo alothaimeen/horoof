@@ -6,6 +6,15 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_BASE_PATH: '/horoof',
   },
+
+  // السماح بالوصول من الشبكة المحلية (الجوالات على نفس الـ WiFi)
+  allowedDevOrigins: ['172.20.10.6'],
+
+  // تحسينات الذاكرة — للتطوير المحلي على أجهزة محدودة الذاكرة
+  experimental: {
+    webpackMemoryOptimizations: true, // تحسين Webpack للذاكرة
+    preloadEntriesOnStart: false,     // عدم تحميل كل الصفحات عند الإقلاع
+  },
 };
 
 module.exports = nextConfig;

@@ -3,11 +3,14 @@
 import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
+import dynamic from 'next/dynamic';
+
+const HexBackground = dynamic(() => Promise.resolve(HexBackgroundInner), { ssr: false });
 
 // شبكة خلايا سداسية للخلفية
 const HEX_LETTERS = ['أ','ب','ت','ث','ج','ح','خ','د','ذ','ر','ز','س','ش','ص','ض','ط','ظ','ع','غ','ف','ق','ك','ل','م','ن','ه','و','ي'];
 
-function HexBackground() {
+function HexBackgroundInner() {
   // شبكة 8 أعمدة × 6 صفوف من الخلايا السداسية
   const cols = 9;
   const rows = 7;
