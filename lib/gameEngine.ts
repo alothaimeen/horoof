@@ -305,7 +305,7 @@ export function initGameEngine(io: Server) {
         const tbEndTime = tbNow + BUZZER_TOTAL_MS;              // auto-timeout
 
         if (tbQuestion) {
-          game.activeQuestion = { id: tbQuestion.id, letter: tbLetter, text: tbQuestion.text, options: tbQuestion.options, correctIndex: tbQuestion.correctIndex, endTime: tbEndTime };
+          game.activeQuestion = { id: tbQuestion.id, letter: tbLetter, text: tbQuestion.text, options: tbQuestion.options, correctIndex: tbQuestion.correctIndex, endTime: tbEndTime, buzzerOpenTime: tbBuzzerOpenTime };
           game.currentQuestionStartTime = 0;
           game.questionTimer = setTimeout(() => handleTiebreakerTimeout(io, roomCode), BUZZER_TOTAL_MS);
         }

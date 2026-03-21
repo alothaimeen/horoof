@@ -185,7 +185,9 @@ export default function PlayPage() {
         // عند إعادة الاتصال أثناء مرحلة البازر — أظهر جميع الخيارات فوراً
         if (data.phase === 'BUZZER' || data.phase === 'TIEBREAKER' || data.phase === 'BUZZER_SECOND_CHANCE') {
           setOptionRevealTime(Date.now() - 60000);
-          setBuzzerOpenTime(data.activeQuestion.buzzerOpenTime ?? null);
+          // إذا كان buzzerOpenTime غير موجود أو في الماضي — أظهر زر الجرس فوراً
+          const serverBuzzerOpen = data.activeQuestion.buzzerOpenTime;
+          setBuzzerOpenTime(serverBuzzerOpen ? Math.min(serverBuzzerOpen, Date.now()) : Date.now());
         }
       }
     });
