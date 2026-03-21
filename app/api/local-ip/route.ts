@@ -13,7 +13,8 @@ function getLocalIP(): string {
 }
 
 export async function GET() {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  // APP_URL (بدون NEXT_PUBLIC_) يُقرأ في وقت التشغيل — لا يُضمَّن في build
+  const appUrl = process.env.APP_URL ?? process.env.NEXT_PUBLIC_APP_URL;
   // على السيرفر أو الإنتاج: لا حاجة للـ IP المحلي
   if (appUrl && !appUrl.includes('localhost')) {
     return Response.json({ ip: null, appUrl });
