@@ -53,6 +53,9 @@ export function QuestionModal({
   onAnswer,
   onBuzzIn,
 }: QuestionModalProps) {
+  const isBuzzerPhase = phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE';
+  const isOpenPhase = phase === 'BUZZER_OPEN';
+
   const [timeLeft, setTimeLeft] = useState(() => endTime > 0 ? Math.max(0, Math.ceil((endTime - Date.now()) / 1000)) : 0);
   const [selected, setSelected] = useState<number | null>(null);
   const [buzzPressed, setBuzzPressed] = useState(false);
@@ -60,9 +63,6 @@ export function QuestionModal({
   const [revealedCount, setRevealedCount] = useState<number>(() =>
     isOpenPhase && openRevealStartTime !== null ? 0 : options.length
   );
-
-  const isBuzzerPhase = phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE';
-  const isOpenPhase = phase === 'BUZZER_OPEN';
 
   // Can answer: ANSWERING (only buzzer team) or BUZZER_OPEN (only open answer team)
   const canAnswer = (
