@@ -10,6 +10,7 @@ export interface HexCell {
   row: number;
   letter: string;     // Arabic letter assigned to this cell
   owner: TeamColor | null;
+  isGolden?: boolean; // revealed only after the cell is correctly claimed
 }
 
 // ⚠️ JSON note: JSON.stringify(new Map()) === "{}"

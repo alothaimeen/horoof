@@ -8,8 +8,10 @@ import { HexGrid } from '../../components/HexGrid';
 import { QuestionModal } from '../../components/QuestionModal';
 import { RoundTracker } from '../../components/RoundTracker';
 import { DairataAlDaw } from '../../components/DairataAlDaw';
+import { Leaderboard, type LeaderboardData } from '../../components/Leaderboard';
+import { SoundEngine } from '@/lib/soundEngine';
 
-type GamePhase = 'CELL_SELECTION' | 'BUZZER' | 'BUZZER_SECOND_CHANCE' | 'ANSWERING' | 'ANSWER_REVEAL' | 'ROUND_OVER' | 'GAME_OVER' | 'DAIRAT_AL_DAW';
+type GamePhase = 'CELL_SELECTION' | 'BUZZER' | 'BUZZER_SECOND_CHANCE' | 'BUZZER_OPEN' | 'ANSWERING' | 'ANSWER_REVEAL' | 'ROUND_OVER' | 'GAME_OVER' | 'DAIRAT_AL_DAW';
 type PagePhase = 'loading' | GamePhase;
 
 interface QuestionInfo {
@@ -58,12 +60,19 @@ export default function PlayPage() {
   const [isHost, setIsHost] = useState(false);
   const myIdRef = useRef('');
   const [buzzerTeam, setBuzzerTeam] = useState<TeamColor | null>(null);
+  const [openAnswerTeam, setOpenAnswerTeam] = useState<TeamColor | null>(null);
+  const [timerMaxSec, setTimerMaxSec] = useState(30);
+  const [goldenCell, setGoldenCell] = useState<{ col: number; row: number } | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardData | null>(null);
+  const [soundEnabled, setSoundEnabled] = useState(true);
 
   const [dawState, setDawState] = useState<DawClientState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // --- Handlers (stable with useCallback) ---
   const handleCellClick = useCallback((col: number, row: number) => {
+    SoundEngine.play('pop');
+    SoundEngine.vibrate([50]);
     getSocket().emit('select_cell', { roomCode: code, col, row });
   }, [code]);
 
@@ -72,6 +81,8 @@ export default function PlayPage() {
   }, [code]);
 
   const handleBuzzIn = useCallback(() => {
+    SoundEngine.play('buzz');
+    SoundEngine.vibrate([100]);
     getSocket().emit('buzz_in', { roomCode: code });
   }, [code]);
 
@@ -94,6 +105,11 @@ export default function PlayPage() {
     const name = localStorage.getItem('playerName') ?? 'لاعب';
     myIdRef.current = savedId;
 
+    // Init sound on first interaction (browser policy)
+    SoundEngine.init();
+    const saved = localStorage.getItem('huroof_sound');
+    setSoundEnabled(saved !== '0');
+
     // Helper to reset question state
     const clearQuestion = () => {
       setQuestion(null);
@@ -102,6 +118,9 @@ export default function PlayPage() {
       setAnswerLocked(false);
       setCorrectPlayerName(null);
       setBuzzerTeam(null);
+      setOpenAnswerTeam(null);
+      setGoldenCell(null);
+      setTimerMaxSec(30);
     };
 
     // --- JOIN ---
@@ -164,18 +183,29 @@ export default function PlayPage() {
       setCorrectIndex(null);
       setCorrectPlayerName(null);
       setBuzzerTeam(null);
+      setOpenAnswerTeam(null);
+      setTimerMaxSec(30);
+    });
+
+    // --- GOLDEN CELL ANNOUNCED ---
+    socket.on('cell_is_golden', (data: any) => {
+      setGoldenCell({ col: data.col, row: data.row });
+      SoundEngine.play('golden');
+      SoundEngine.vibrate([100, 50, 100]);
     });
 
     // --- BUZZ CONFIRMED ---
     socket.on('buzz_confirmed', (data: any) => {
       setBuzzerTeam(data.team);
       setPhase('ANSWERING');
+      setTimerMaxSec(data.timeLimit ?? 10);
       setQuestion(prev => prev ? { ...prev, endTime: data.endTime } : prev);
     });
 
     // --- ANSWER WRONG (team-level, with second chance) ---
     socket.on('answer_wrong_team', ({ wrongTeam }: any) => {
-      if ('vibrate' in navigator) navigator.vibrate([150, 50, 150]);
+      SoundEngine.play('wrong');
+      SoundEngine.vibrate([300]);
     });
 
     // --- ANSWER LOCKED (correct answer) ---
@@ -183,18 +213,25 @@ export default function PlayPage() {
       setAnswerLocked(true);
       setCorrectIndex(data.correctIndex);
       setCorrectPlayerName(data.playerName);
+      SoundEngine.play('correct');
+      SoundEngine.vibrate([100]);
     });
 
     // --- ANSWER WRONG (to submitter only — legacy, kept for compatibility) ---
     socket.on('answer_wrong', () => {
-      if ('vibrate' in navigator) navigator.vibrate([200]);
+      SoundEngine.play('wrong');
+      SoundEngine.vibrate([300]);
     });
 
     // --- CELL CLAIMED (delta update) ---
-    socket.on('cell_claimed', ({ col, row, owner }: any) => {
+    socket.on('cell_claimed', ({ col, row, owner, isGolden }: any) => {
       setGrid(prev => prev.map(c =>
-        c.col === col && c.row === row ? { ...c, owner } : c
+        c.col === col && c.row === row ? { ...c, owner, isGolden: isGolden || undefined } : c
       ));
+      if (isGolden) {
+        SoundEngine.play('golden');
+        SoundEngine.vibrate([100, 50, 100]);
+      }
     });
 
     // --- ANSWER TIMEOUT ---
@@ -210,26 +247,29 @@ export default function PlayPage() {
     });
 
     // --- PHASE CHANGE (after correct answer reveal or second chance) ---
-    socket.on('phase_change', ({ phase: p, currentTeam: ct }: any) => {
+    socket.on('phase_change', ({ phase: p, currentTeam: ct, answeringTeam, timeLimit, endTime: et }: any) => {
       setPhase(p);
       setCurrentTeam(ct);
       if (p === 'CELL_SELECTION') {
         clearQuestion();
       }
-      // BUZZER_SECOND_CHANCE: clear buzzerTeam so other team can buzz
-      if (p === 'BUZZER_SECOND_CHANCE') {
-        // keep question displayed, just change phase — buzzerTeam is reset server-side
-        // the client keeps buzzerTeam so it knows who answered wrong
+      if (p === 'BUZZER_OPEN') {
+        setOpenAnswerTeam(answeringTeam ?? null);
+        setTimerMaxSec(timeLimit ?? 30);
+        if (et) setQuestion(prev => prev ? { ...prev, endTime: et } : prev);
       }
     });
 
     // --- ROUND OVER ---
-    socket.on('round_over', ({ winner, roundWins: rw, winningPath: wp }: any) => {
+    socket.on('round_over', ({ winner, roundWins: rw, winningPath: wp, leaderboard: lb }: any) => {
       setPhase('ROUND_OVER');
       setRoundWins(rw);
       setWinningPath(wp);
       setRoundWinner(winner);
+      if (lb) setLeaderboard(lb);
       clearQuestion();
+      SoundEngine.play('win');
+      SoundEngine.vibrate([200, 100, 200, 100, 300]);
     });
 
     // --- ROUND START ---
@@ -245,12 +285,15 @@ export default function PlayPage() {
     });
 
     // --- GAME OVER ---
-    socket.on('game_over', ({ winner, roundWins: rw, winningPath: wp }: any) => {
+    socket.on('game_over', ({ winner, roundWins: rw, winningPath: wp, leaderboard: lb }: any) => {
       setPhase('GAME_OVER');
       setRoundWins(rw);
       setWinningPath(wp);
       setGameWinner(winner);
+      if (lb) setLeaderboard(lb);
       clearQuestion();
+      SoundEngine.play('win');
+      SoundEngine.vibrate([200, 100, 200, 100, 300]);
     });
 
     // --- DAIRAT AL-DAW ---
@@ -302,7 +345,7 @@ export default function PlayPage() {
     return () => {
       const events = [
         'room_joined', 'grid_sync', 'game_start', 'cell_selected',
-        'buzzer_started', 'buzz_confirmed', 'answer_wrong_team',
+        'buzzer_started', 'cell_is_golden', 'buzz_confirmed', 'answer_wrong_team',
         'answer_locked', 'answer_wrong', 'cell_claimed',
         'answer_timeout', 'phase_change', 'round_over', 'round_start',
         'game_over', 'daw_start', 'daw_question', 'daw_result', 'daw_end',
@@ -441,8 +484,24 @@ export default function PlayPage() {
             ● دور {teamLabel}
           </span>
         </div>
-        <div className="text-sm font-black" style={{ color: '#C9A227' }}>
-          الجولة {currentRound}
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-black" style={{ color: '#C9A227' }}>
+            الجولة {currentRound}
+          </div>
+          {/* Sound toggle */}
+          <button
+            onClick={() => {
+              SoundEngine.init();
+              const next = !soundEnabled;
+              SoundEngine.setEnabled(next);
+              setSoundEnabled(next);
+            }}
+            className="text-lg"
+            title={soundEnabled ? 'كتم الصوت' : 'تشغيل الصوت'}
+            style={{ opacity: 0.7, lineHeight: 1 }}
+          >
+            {soundEnabled ? '🔊' : '🔇'}
+          </button>
         </div>
       </div>
 
@@ -474,6 +533,7 @@ export default function PlayPage() {
         selectedCell={selectedCell}
         winningPath={winningPath}
         answerLocked={answerLocked}
+        goldenCell={goldenCell}
         onCellClick={handleCellClick}
       />
 
@@ -487,13 +547,14 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Question Modal — shown in BUZZER, BUZZER_SECOND_CHANCE, ANSWERING, or when correctIndex revealed */}
-      {question && (phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE' || phase === 'ANSWERING' || correctIndex !== null) && (
+      {/* Question Modal — shown in BUZZER, BUZZER_SECOND_CHANCE, BUZZER_OPEN, ANSWERING, or when correctIndex revealed */}
+      {question && (phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE' || phase === 'BUZZER_OPEN' || phase === 'ANSWERING' || correctIndex !== null) && (
         <QuestionModal
           letter={question.letter}
           text={question.text}
           options={question.options}
           endTime={question.endTime}
+          timerMaxSec={timerMaxSec}
           currentTeam={currentTeam}
           myTeam={myTeam}
           isHost={isHost}
@@ -501,7 +562,8 @@ export default function PlayPage() {
           correctIndex={correctIndex}
           phase={phase as any}
           buzzerTeam={buzzerTeam}
-          mayBuzz={!isHost && myTeam !== null && myTeam !== buzzerTeam}
+          openAnswerTeam={openAnswerTeam}
+          mayBuzz={!isHost && myTeam !== null && myTeam !== buzzerTeam && phase !== 'BUZZER_OPEN'}
           onAnswer={handleSubmitAnswer}
           onBuzzIn={handleBuzzIn}
         />

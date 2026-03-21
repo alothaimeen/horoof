@@ -7,6 +7,7 @@ type ModalPhase =
   | 'CELL_SELECTION'
   | 'BUZZER'
   | 'BUZZER_SECOND_CHANCE'
+  | 'BUZZER_OPEN'
   | 'ANSWERING'
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
@@ -17,15 +18,17 @@ interface QuestionModalProps {
   letter: string;
   text: string;
   options: string[];
-  endTime: number;             // timestamp from server (Date.now() + 30s), 0 in BUZZER phase
+  endTime: number;              // timestamp from server, 0 in BUZZER phase
+  timerMaxSec: number;          // max seconds for the current timer (10 for ANSWERING, 30 for BUZZER_OPEN)
   currentTeam: TeamColor;
-  myTeam: TeamColor | null;    // null for host
+  myTeam: TeamColor | null;     // null for host
   isHost: boolean;
-  answerLocked: boolean;       // true after someone answered correctly
-  correctIndex: number | null; // revealed after lock or timeout
+  answerLocked: boolean;        // true after someone answered correctly
+  correctIndex: number | null;  // revealed after lock or timeout
   phase: ModalPhase;
   buzzerTeam: TeamColor | null; // which team buzzed in (null if no one yet)
-  mayBuzz: boolean;            // can this player's team press the buzzer?
+  openAnswerTeam: TeamColor | null; // team that can directly answer in BUZZER_OPEN
+  mayBuzz: boolean;             // can this player's team press the buzzer?
   onAnswer: (index: number) => void;
   onBuzzIn: () => void;
 }
@@ -35,6 +38,7 @@ export function QuestionModal({
   text,
   options,
   endTime,
+  timerMaxSec,
   currentTeam,
   myTeam,
   isHost,
@@ -42,6 +46,7 @@ export function QuestionModal({
   correctIndex,
   phase,
   buzzerTeam,
+  openAnswerTeam,
   mayBuzz,
   onAnswer,
   onBuzzIn,
@@ -51,10 +56,15 @@ export function QuestionModal({
   const [buzzPressed, setBuzzPressed] = useState(false);
 
   const isBuzzerPhase = phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE';
-  // Can answer: only in ANSWERING phase and only if you belong to the team that buzzed
-  const canAnswer = phase === 'ANSWERING' && !isHost && myTeam === buzzerTeam && !answerLocked && selected === null;
+  const isOpenPhase = phase === 'BUZZER_OPEN';
 
-  // Countdown timer — only active in ANSWERING phase
+  // Can answer: ANSWERING (only buzzer team) or BUZZER_OPEN (only open answer team)
+  const canAnswer = (
+    (phase === 'ANSWERING' && !isHost && myTeam === buzzerTeam && !answerLocked && selected === null) ||
+    (isOpenPhase && !isHost && myTeam === openAnswerTeam && !answerLocked && selected === null)
+  );
+
+  // Countdown timer — active in ANSWERING and BUZZER_OPEN
   useEffect(() => {
     if (!endTime || endTime === 0 || isBuzzerPhase) {
       setTimeLeft(0);
@@ -75,6 +85,11 @@ export function QuestionModal({
     setBuzzPressed(false);
   }, [text]);
 
+  // Reset selection when phase changes to BUZZER_OPEN
+  useEffect(() => {
+    if (isOpenPhase) setSelected(null);
+  }, [isOpenPhase]);
+
   const handleAnswer = (index: number) => {
     if (!canAnswer) return;
     setSelected(index);
@@ -87,8 +102,13 @@ export function QuestionModal({
     onBuzzIn();
   };
 
-  const timerPercent = endTime > 0 ? Math.max(0, (timeLeft / 30) * 100) : 0;
-  const timerColor = timeLeft <= 5 ? '#FF2C2C' : timeLeft <= 10 ? '#FFD700' : '#00FF7F';
+  // Timer percent uses timerMaxSec as denominator
+  const timerPercent = endTime > 0 ? Math.max(0, (timeLeft / timerMaxSec) * 100) : 0;
+
+  // Color: red/tense for ANSWERING (10s), green/calm for BUZZER_OPEN (30s)
+  const timerColor = isOpenPhase
+    ? (timeLeft <= 8 ? '#FFD700' : '#00FF7F')
+    : (timeLeft <= 3 ? '#FF2C2C' : timeLeft <= 6 ? '#FF8C00' : '#FF4444');
 
   const isRedTeam = currentTeam === 'RED';
   const teamBorderColor = isRedTeam ? 'rgba(255,44,44,0.6)' : 'rgba(0,200,83,0.6)';
@@ -97,8 +117,9 @@ export function QuestionModal({
   const teamLabel = isRedTeam ? 'الفريق الأحمر' : 'الفريق الأخضر';
 
   const myTeamColor = myTeam === 'RED' ? '#FF4444' : '#00FF7F';
-  const myTeamLabel = myTeam === 'RED' ? 'الأحمر' : 'الأخضر';
   const buzzerTeamLabel = buzzerTeam === 'RED' ? 'الأحمر' : buzzerTeam === 'GREEN' ? 'الأخضر' : '';
+  const openTeamLabel = openAnswerTeam === 'RED' ? 'الأحمر' : openAnswerTeam === 'GREEN' ? 'الأخضر' : '';
+  const openTeamColor = openAnswerTeam === 'RED' ? '#FF4444' : '#00FF7F';
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4"
@@ -108,8 +129,8 @@ export function QuestionModal({
         dir="rtl"
         style={{
           background: 'rgba(6,10,23,0.97)',
-          border: `2px solid ${teamBorderColor}`,
-          boxShadow: `0 -10px 40px ${teamGlowColor}, 0 0 0 1px rgba(255,255,255,0.03)`,
+          border: `2px solid ${isOpenPhase ? 'rgba(0,255,127,0.5)' : teamBorderColor}`,
+          boxShadow: `0 -10px 40px ${isOpenPhase ? 'rgba(0,255,127,0.15)' : teamGlowColor}, 0 0 0 1px rgba(255,255,255,0.03)`,
         }}
       >
         {/* Header — حرف + فريق */}
@@ -127,9 +148,9 @@ export function QuestionModal({
           </div>
           <span
             className="text-sm font-black tracking-widest"
-            style={{ color: teamTextColor, textShadow: `0 0 8px ${teamTextColor}` }}
+            style={{ color: isOpenPhase ? '#00FF7F' : teamTextColor, textShadow: `0 0 8px ${isOpenPhase ? '#00FF7F' : teamTextColor}` }}
           >
-            ● {teamLabel}
+            {isOpenPhase ? '⚡ وقت مفتوح' : `● ${teamLabel}`}
           </span>
         </div>
 
@@ -150,7 +171,6 @@ export function QuestionModal({
               </p>
             )}
 
-            {/* زر السرعة */}
             {!isHost && mayBuzz && !buzzPressed && (
               <button
                 onClick={handleBuzz}
@@ -168,7 +188,6 @@ export function QuestionModal({
               </button>
             )}
 
-            {/* بعد الضغط — انتظار الموافقة */}
             {!isHost && mayBuzz && buzzPressed && (
               <div
                 className="text-center py-4 px-6 rounded-xl font-black text-lg"
@@ -178,7 +197,6 @@ export function QuestionModal({
               </div>
             )}
 
-            {/* فريق غير مؤهل للضغط أو الكابتن */}
             {(isHost || (!mayBuzz && !buzzPressed)) && (
               <div
                 className="text-center py-3 px-5 rounded-xl text-sm font-bold"
@@ -190,10 +208,23 @@ export function QuestionModal({
           </div>
         )}
 
-        {/* ─── طور ANSWERING ─── */}
-        {phase === 'ANSWERING' && (
+        {/* ─── طور BUZZER_OPEN ─── */}
+        {isOpenPhase && (
           <>
-            {/* شريط المؤقت */}
+            {/* إعلان الوقت المفتوح */}
+            <div
+              className="text-center py-2 px-4 rounded-xl mb-3"
+              style={{ background: 'rgba(0,255,127,0.06)', border: '1px solid rgba(0,255,127,0.2)' }}
+            >
+              <p className="text-sm font-black" style={{ color: '#00FF7F', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
+                ⚡ وقت مفتوح! الفريق {buzzerTeamLabel} لم يجب
+              </p>
+              <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                الفريق <span style={{ color: openTeamColor, fontWeight: 'bold' }}>{openTeamLabel}</span> — أجب الآن!
+              </p>
+            </div>
+
+            {/* شريط المؤقت — أخضر هادئ */}
             <div
               className="h-2 rounded-full mb-2 overflow-hidden"
               style={{ background: 'rgba(255,255,255,0.06)' }}
@@ -219,7 +250,78 @@ export function QuestionModal({
               {timeLeft}
             </div>
 
-            {/* الخيارات — للفريق الذي ضغط السرعة فقط */}
+            {/* الخيارات المباشرة للفريق المفتوح */}
+            {(canAnswer || selected !== null || correctIndex !== null) ? (
+              <div className="grid grid-cols-1 gap-2">
+                {options.map((opt, i) => (
+                  <button
+                    key={i}
+                    onClick={() => handleAnswer(i)}
+                    disabled={!canAnswer}
+                    className={getOptionStyle(i, selected, correctIndex, answerLocked, timeLeft, canAnswer)}
+                  >
+                    <span className="font-black ml-2 text-sm" style={{ color: '#C9A227' }}>
+                      {['أ', 'ب', 'ج', 'د'][i]}.
+                    </span>
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div
+                className="text-center py-4 px-5 rounded-xl"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+              >
+                {isHost ? (
+                  <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>👁 الكابتن — مشاهدة</p>
+                ) : (
+                  <p className="font-black text-base" style={{ color: openTeamColor }}>
+                    🎯 الفريق {openTeamLabel} يجيب الآن...
+                  </p>
+                )}
+              </div>
+            )}
+
+            {answerLocked && (
+              <p className="text-center text-sm font-black mt-4"
+                style={{ color: '#69F0AE', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
+                ✓ تم تسجيل الإجابة الصحيحة!
+              </p>
+            )}
+          </>
+        )}
+
+        {/* ─── طور ANSWERING ─── */}
+        {phase === 'ANSWERING' && (
+          <>
+            {/* شريط المؤقت — أحمر متوتر */}
+            <div
+              className="h-2 rounded-full mb-2 overflow-hidden"
+              style={{ background: 'rgba(255,255,255,0.06)' }}
+            >
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${timerPercent}%`,
+                  background: `linear-gradient(90deg, ${timerColor}, ${timerColor}80)`,
+                  boxShadow: `0 0 6px ${timerColor}${timeLeft <= 3 ? ', 0 0 12px ' + timerColor : ''}`,
+                  transition: 'width 0.25s linear',
+                }}
+              />
+            </div>
+            <div
+              className="text-center font-black mb-3"
+              style={{
+                fontSize: timeLeft <= 3 ? '2rem' : '1.5rem',
+                color: timerColor,
+                textShadow: `0 0 ${timeLeft <= 3 ? '16px' : '10px'} ${timerColor}`,
+                fontFamily: 'Courier New, monospace',
+                transition: 'font-size 0.2s, color 0.2s',
+              }}
+            >
+              {timeLeft}
+            </div>
+
             {canAnswer || (selected !== null) || (correctIndex !== null) ? (
               <div className="grid grid-cols-1 gap-2">
                 {options.map((opt, i) => (
@@ -230,14 +332,13 @@ export function QuestionModal({
                     className={getOptionStyle(i, selected, correctIndex, answerLocked, timeLeft, canAnswer)}
                   >
                     <span className="font-black ml-2 text-sm" style={{ color: '#C9A227' }}>
-                      {['أ','ب','ج','د'][i]}.
+                      {['أ', 'ب', 'ج', 'د'][i]}.
                     </span>
                     {opt}
                   </button>
                 ))}
               </div>
             ) : (
-              /* فريق المشاهدين */
               <div
                 className="text-center py-4 px-5 rounded-xl"
                 style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
@@ -252,7 +353,6 @@ export function QuestionModal({
               </div>
             )}
 
-            {/* رسالة الحالة */}
             {answerLocked && (
               <p className="text-center text-sm font-black mt-4"
                 style={{ color: '#69F0AE', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
@@ -286,4 +386,3 @@ function getOptionStyle(
   if (canAnswer) return 'option-btn cursor-pointer';
   return 'option-btn opacity-60 cursor-not-allowed';
 }
-

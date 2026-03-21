@@ -337,6 +337,22 @@ body {
   }
 }
 
+@keyframes goldPulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes goldSpin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 
 /* أزرار الخيارات */
 .option-btn {

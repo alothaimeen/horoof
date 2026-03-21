@@ -26,6 +26,8 @@ import {
 // ─── Config ───────────────────────────────────────────────────
 const QUESTION_DURATION_MS =
   parseInt(process.env.QUESTION_DURATION_SECONDS || '30') * 1000;
+const BUZZER_ANSWER_MS = 10000;   // 10 seconds after buzzing in
+const BUZZER_OPEN_MS   = 30000;   // 30 seconds for the other team (open phase)
 const ROUNDS_TO_WIN = 3;
 const ANSWER_REVEAL_MS = 1500;
 
@@ -35,6 +37,7 @@ type GamePhase =
   | 'CELL_SELECTION'
   | 'BUZZER'
   | 'BUZZER_SECOND_CHANCE'
+  | 'BUZZER_OPEN'          // other team answers directly (no buzz needed)
   | 'ANSWERING'
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
@@ -48,6 +51,13 @@ interface PlayerState {
   isConnected: boolean;
   socketId: string | null;
   team: TeamColor | null;
+  stats: {
+    correct: number;
+    wrong: number;
+    buzzes: number;
+    totalTimeMs: number;
+    goldenWins: number;
+  };
 }
 
 interface HexGameState {
@@ -79,6 +89,9 @@ interface HexGameState {
   dawState: DawState | null;
   buzzerTeam: TeamColor | null;           // team that buzzed in (or null)
   buzzerLockedTeams: Set<TeamColor>;     // teams that already had their chance
+  buzzerPlayerId: string | null;         // specific player who buzzed in
+  goldenCellKey: string | null;          // secret — not sent to clients until claimed
+  currentQuestionStartTime: number;      // Date.now() when answering started
 }
 
 // ─── In-memory state ──────────────────────────────────────────
@@ -229,16 +242,24 @@ export function initGameEngine(io: Server) {
         if (letters.length === 0) { socket.emit('error', { message: 'لا توجد أسئلة في قاعدة البيانات' }); return; }
 
         const players = new Map<string, PlayerState>();
-        for (const p of session.players) players.set(p.id, { id: p.id, name: p.name, joinOrder: p.joinOrder, isConnected: p.isConnected, socketId: p.socketId, team: (p as any).team ?? null });
+        for (const p of session.players) players.set(p.id, {
+          id: p.id, name: p.name, joinOrder: p.joinOrder, isConnected: p.isConnected, socketId: p.socketId, team: (p as any).team ?? null,
+          stats: { correct: 0, wrong: 0, buzzes: 0, totalTimeMs: 0, goldenWins: 0 },
+        });
+
+        const initialGrid = initGrid(letters);
+        const initialKeys = [...initialGrid.keys()];
+        const goldenCellKey = initialKeys[Math.floor(Math.random() * initialKeys.length)];
 
         const game: HexGameState = {
           sessionId: session.id, hostPlayerId: session.hostId!,
           phase: 'CELL_SELECTION', currentRound: 1, roundWins: { RED: 0, GREEN: 0 }, currentTeam: 'RED',
-          grid: initGrid(letters), gridVersion: 0,
+          grid: initialGrid, gridVersion: 0,
           redTeam: new Set(redPlayers.map(p => p.id)), greenTeam: new Set(greenPlayers.map(p => p.id)),
           selectedCell: null, activeQuestion: null, answerLocked: false, questionTimer: null,
           questionsByLetter, usedQuestions: new Set(), players, winningPath: null, dawState: null,
           buzzerTeam: null, buzzerLockedTeams: new Set(),
+          buzzerPlayerId: null, goldenCellKey, currentQuestionStartTime: 0,
         };
         activeGames.set(roomCode, game);
         await prisma.gameSession.update({ where: { id: session.id }, data: { status: 'PLAYING' } });
@@ -266,13 +287,18 @@ export function initGameEngine(io: Server) {
       game.answerLocked = false;
       game.buzzerTeam = null;
       game.buzzerLockedTeams = new Set();
+      game.buzzerPlayerId = null;
       game.activeQuestion = { id: question.id, letter: cell.letter, text: question.text, options: question.options, correctIndex: question.correctIndex, endTime: 0 };
 
       // Safety timeout: if no one buzzes in 30s, release cell and change turn
       if (game.questionTimer) clearTimeout(game.questionTimer);
       game.questionTimer = setTimeout(() => handleBuzzerTimeout(io, roomCode), 30000);
 
+      const isGoldenCell = game.goldenCellKey === key;
       io.to(roomCode).emit('cell_selected', { col, row, letter: cell.letter, team: game.currentTeam });
+      if (isGoldenCell) {
+        io.to(roomCode).emit('cell_is_golden', { col, row, letter: cell.letter });
+      }
       io.to(roomCode).emit('buzzer_started', { letter: cell.letter, text: question.text, options: question.options, col, row });
     });
 
@@ -296,28 +322,41 @@ export function initGameEngine(io: Server) {
       if (game.questionTimer) clearTimeout(game.questionTimer);
 
       const playerState = game.players.get(playerId);
-      const endTime = Date.now() + QUESTION_DURATION_MS;
+      if (playerState) playerState.stats.buzzes++;
+      const endTime = Date.now() + BUZZER_ANSWER_MS;
       game.phase = 'ANSWERING';
       game.buzzerTeam = playerTeam;
       game.buzzerLockedTeams.add(playerTeam);
+      game.buzzerPlayerId = playerId;
       game.answerLocked = false;
+      game.currentQuestionStartTime = Date.now();
       game.activeQuestion!.endTime = endTime;
-      game.questionTimer = setTimeout(() => handleQuestionTimeout(io, roomCode), QUESTION_DURATION_MS);
+      game.questionTimer = setTimeout(() => handleBuzzerAnswerTimeout(io, roomCode), BUZZER_ANSWER_MS);
 
       io.to(roomCode).emit('buzz_confirmed', {
         team: playerTeam,
         playerName: playerState?.name ?? '',
         endTime,
+        timeLimit: BUZZER_ANSWER_MS / 1000,
       });
     });
 
     socket.on('submit_answer', ({ roomCode, answerIndex }: { roomCode: string; answerIndex: number }) => {
       const playerId = socket.data.playerId as string;
       const game = activeGames.get(roomCode);
-      if (!game || game.phase !== 'ANSWERING' || game.answerLocked) return;
+      if (!game || game.answerLocked) return;
 
-      // Answer permission: must belong to the team that buzzed in
-      const answeringTeam = game.buzzerTeam ?? game.currentTeam;
+      // Determine answering team based on phase
+      let answeringTeam: TeamColor;
+      if (game.phase === 'ANSWERING') {
+        answeringTeam = game.buzzerTeam ?? game.currentTeam;
+      } else if (game.phase === 'BUZZER_OPEN') {
+        // BUZZER_OPEN: the OTHER team answers directly (no buzz needed)
+        answeringTeam = game.buzzerTeam ? otherTeam(game.buzzerTeam) : game.currentTeam;
+      } else {
+        return;
+      }
+
       const teamSet = answeringTeam === 'RED' ? game.redTeam : game.greenTeam;
       if (!teamSet.has(playerId) || !game.activeQuestion || !game.selectedCell) return;
 
@@ -329,23 +368,29 @@ export function initGameEngine(io: Server) {
         if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
 
         const playerState = game.players.get(playerId);
+        if (playerState) playerState.stats.wrong++;
         const otherT = otherTeam(answeringTeam);
-        const otherAlreadyUsed = game.buzzerLockedTeams.has(otherT);
+        const otherAlreadyUsed = game.buzzerLockedTeams.has(otherT) || game.phase === 'BUZZER_OPEN';
 
         if (!otherAlreadyUsed) {
-          // Give the other team a second chance to buzz in
-          game.phase = 'BUZZER_SECOND_CHANCE';
+          // Wrong in ANSWERING — give the other team BUZZER_OPEN (direct answer, 30s)
+          game.phase = 'BUZZER_OPEN';
           game.answerLocked = false;
-          io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
-          io.to(roomCode).emit('phase_change', { phase: game.phase, currentTeam: game.currentTeam });
-          // 10s timeout for BUZZER_SECOND_CHANCE
+          game.currentQuestionStartTime = Date.now();
+          const openEndTime = Date.now() + BUZZER_OPEN_MS;
+          game.activeQuestion!.endTime = openEndTime;
           game.questionTimer = setTimeout(() => {
             const g = activeGames.get(roomCode);
-            if (!g || g.phase !== 'BUZZER_SECOND_CHANCE') return;
+            if (!g || g.phase !== 'BUZZER_OPEN') return;
             releaseCellAndChangeTurn(io, roomCode, g, g.activeQuestion?.correctIndex ?? -1);
-          }, 10000);
+          }, BUZZER_OPEN_MS);
+          io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
+          io.to(roomCode).emit('phase_change', {
+            phase: game.phase, currentTeam: game.currentTeam,
+            answeringTeam: otherT, timeLimit: BUZZER_OPEN_MS / 1000, endTime: openEndTime,
+          });
         } else {
-          // Both teams failed — release cell and change turn
+          // Both teams have had their chance — release cell and change turn
           io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
           releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion.correctIndex);
         }
@@ -356,15 +401,35 @@ export function initGameEngine(io: Server) {
       game.answerLocked = true;
       if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
 
+      const timeTakenMs = game.currentQuestionStartTime > 0
+        ? Math.max(0, Date.now() - game.currentQuestionStartTime)
+        : 0;
+
       const { col, row } = game.selectedCell;
       const playerState = game.players.get(playerId);
-      const cellWinner = game.buzzerTeam ?? game.currentTeam; // whoever buzzed gets the cell
+      const cellWinner = game.phase === 'BUZZER_OPEN'
+        ? (game.buzzerTeam ? otherTeam(game.buzzerTeam) : game.currentTeam)
+        : (game.buzzerTeam ?? game.currentTeam);
+
+      if (playerState) {
+        playerState.stats.correct++;
+        playerState.stats.totalTimeMs += timeTakenMs;
+      }
+
+      // Check if this is the golden cell
+      const ck = cellKey(col, row);
+      const isGolden = game.goldenCellKey === ck;
+      if (isGolden && playerState) playerState.stats.goldenWins++;
+
       io.to(roomCode).emit('answer_locked', { correctPlayerId: playerId, playerName: playerState?.name ?? '', col, row, correctIndex: game.activeQuestion.correctIndex });
 
-      const cell = game.grid.get(cellKey(col, row));
-      if (cell) cell.owner = cellWinner;
+      const cell = game.grid.get(ck);
+      if (cell) {
+        cell.owner = cellWinner;
+        if (isGolden) cell.isGolden = true;
+      }
       game.gridVersion++;
-      io.to(roomCode).emit('cell_claimed', { col, row, owner: cellWinner, gridVersion: game.gridVersion });
+      io.to(roomCode).emit('cell_claimed', { col, row, owner: cellWinner, gridVersion: game.gridVersion, isGolden });
       game.phase = 'ANSWER_REVEAL';
 
       setTimeout(() => {
@@ -375,10 +440,10 @@ export function initGameEngine(io: Server) {
           g.roundWins[cellWinner]++;
           if (g.roundWins[cellWinner] >= ROUNDS_TO_WIN) {
             g.phase = 'GAME_OVER';
-            io.to(roomCode).emit('game_over', { winner: cellWinner, roundWins: g.roundWins, winningPath: g.winningPath });
+            io.to(roomCode).emit('game_over', { winner: cellWinner, roundWins: g.roundWins, winningPath: g.winningPath, leaderboard: buildLeaderboard(g) });
           } else {
             g.phase = 'ROUND_OVER';
-            io.to(roomCode).emit('round_over', { winner, roundWins: g.roundWins, winningPath: g.winningPath });
+            io.to(roomCode).emit('round_over', { winner: cellWinner, roundWins: g.roundWins, winningPath: g.winningPath, leaderboard: buildLeaderboard(g) });
           }
         } else {
           g.currentTeam = otherTeam(g.currentTeam);
@@ -386,6 +451,7 @@ export function initGameEngine(io: Server) {
           g.selectedCell = null;
           g.activeQuestion = null;
           g.buzzerTeam = null;
+          g.buzzerPlayerId = null;
           g.buzzerLockedTeams = new Set();
           io.to(roomCode).emit('phase_change', { phase: g.phase, currentTeam: g.currentTeam });
         }
@@ -401,6 +467,10 @@ export function initGameEngine(io: Server) {
       game.currentRound++; game.currentTeam = otherTeam(game.currentTeam);
       game.phase = 'CELL_SELECTION'; game.selectedCell = null; game.activeQuestion = null;
       game.winningPath = null; game.usedQuestions = new Set(); game.answerLocked = false;
+      game.buzzerTeam = null; game.buzzerPlayerId = null; game.buzzerLockedTeams = new Set();
+      // Pick a new golden cell for the new round
+      const newKeys = [...game.grid.keys()];
+      game.goldenCellKey = newKeys[Math.floor(Math.random() * newKeys.length)];
       io.to(roomCode).emit('round_start', { round: game.currentRound, grid: buildGridArray(game), currentTeam: game.currentTeam, roundWins: game.roundWins, gridVersion: game.gridVersion });
     });
 
@@ -485,14 +555,75 @@ export function initGameEngine(io: Server) {
     game.activeQuestion = null;
     game.answerLocked = false;
     game.buzzerTeam = null;
+    game.buzzerPlayerId = null;
     game.buzzerLockedTeams = new Set();
     io.to(roomCode).emit('answer_timeout', { correctIndex, currentTeam: game.currentTeam });
+  }
+
+  function buildLeaderboard(game: HexGameState) {
+    const players = [...game.players.values()]
+      .filter(p => p.id !== game.hostPlayerId)
+      .sort((a, b) => {
+        if (b.stats.correct !== a.stats.correct) return b.stats.correct - a.stats.correct;
+        if (a.stats.wrong !== b.stats.wrong) return a.stats.wrong - b.stats.wrong;
+        const avgA = a.stats.correct > 0 ? a.stats.totalTimeMs / a.stats.correct : Infinity;
+        const avgB = b.stats.correct > 0 ? b.stats.totalTimeMs / b.stats.correct : Infinity;
+        return avgA - avgB;
+      })
+      .map((p, idx) => ({
+        rank: idx + 1,
+        id: p.id,
+        name: p.name,
+        team: p.team,
+        correct: p.stats.correct,
+        wrong: p.stats.wrong,
+        buzzes: p.stats.buzzes,
+        goldenWins: p.stats.goldenWins,
+        avgTimeMs: p.stats.correct > 0 ? Math.round(p.stats.totalTimeMs / p.stats.correct) : 0,
+      }));
+    const fastestPlayer = [...game.players.values()]
+      .filter(p => p.id !== game.hostPlayerId && p.stats.correct > 0)
+      .sort((a, b) => (a.stats.totalTimeMs / a.stats.correct) - (b.stats.totalTimeMs / b.stats.correct))[0];
+    return {
+      players,
+      fastestPlayer: fastestPlayer
+        ? { name: fastestPlayer.name, avgTimeMs: Math.round(fastestPlayer.stats.totalTimeMs / fastestPlayer.stats.correct) }
+        : null,
+    };
   }
 
   function handleBuzzerTimeout(io: Server, roomCode: string) {
     const game = activeGames.get(roomCode);
     if (!game || (game.phase !== 'BUZZER' && game.phase !== 'BUZZER_SECOND_CHANCE')) return;
     releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion?.correctIndex ?? -1);
+  }
+
+  // Called when ANSWERING timer (10s) expires after buzz_in
+  function handleBuzzerAnswerTimeout(io: Server, roomCode: string) {
+    const game = activeGames.get(roomCode);
+    if (!game || game.phase !== 'ANSWERING') return;
+    const failedTeam = game.buzzerTeam!;
+    const otherT = otherTeam(failedTeam);
+    if (!game.buzzerLockedTeams.has(otherT)) {
+      // Give the other team BUZZER_OPEN (30s direct answer)
+      game.phase = 'BUZZER_OPEN';
+      game.answerLocked = false;
+      game.currentQuestionStartTime = Date.now();
+      const openEndTime = Date.now() + BUZZER_OPEN_MS;
+      game.activeQuestion!.endTime = openEndTime;
+      game.questionTimer = setTimeout(() => {
+        const g = activeGames.get(roomCode);
+        if (!g || g.phase !== 'BUZZER_OPEN') return;
+        releaseCellAndChangeTurn(io, roomCode, g, g.activeQuestion?.correctIndex ?? -1);
+      }, BUZZER_OPEN_MS);
+      io.to(roomCode).emit('answer_wrong_team', { wrongTeam: failedTeam, playerName: '' });
+      io.to(roomCode).emit('phase_change', {
+        phase: game.phase, currentTeam: game.currentTeam,
+        answeringTeam: otherT, timeLimit: BUZZER_OPEN_MS / 1000, endTime: openEndTime,
+      });
+    } else {
+      releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion?.correctIndex ?? -1);
+    }
   }
 
   function handleQuestionTimeout(io: Server, roomCode: string) {

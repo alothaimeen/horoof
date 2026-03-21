@@ -9,6 +9,7 @@ type GamePhase =
   | 'CELL_SELECTION'
   | 'BUZZER'
   | 'BUZZER_SECOND_CHANCE'
+  | 'BUZZER_OPEN'
   | 'ANSWERING'
   | 'ANSWER_REVEAL'
   | 'ROUND_OVER'
@@ -24,6 +25,7 @@ interface HexGridProps {
   selectedCell?: { col: number; row: number } | null;
   winningPath?: string[] | null;
   answerLocked?: boolean;
+  goldenCell?: { col: number; row: number } | null; // announced golden cell
   onCellClick?: (col: number, row: number) => void;
 }
 
@@ -67,6 +69,7 @@ export function HexGrid({
   selectedCell,
   winningPath,
   answerLocked = false,
+  goldenCell,
   onCellClick,
 }: HexGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -216,6 +219,7 @@ export function HexGrid({
           const isSel = !!(selectedCell && selectedCell.col === cell.col && selectedCell.row === cell.row);
           const isWin = winPathSet.has(key);
           const hoverable = isMyTurn && cell.owner === null && !isSel;
+          const isGoldenAnnounced = !!(goldenCell && goldenCell.col === cell.col && goldenCell.row === cell.row);
 
           return (
             <HexCell
@@ -228,6 +232,7 @@ export function HexGrid({
               isWinPath={isWin}
               isHoverable={hoverable}
               answerLocked={answerLocked && isSel}
+              isGoldenAnnounced={isGoldenAnnounced}
               onClick={() => handleClick(cell.col, cell.row)}
             />
           );

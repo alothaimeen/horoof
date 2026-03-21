@@ -10,6 +10,7 @@ interface HexCellProps {
   isWinPath: boolean;
   isHoverable: boolean;   // true when it's this player's team's turn and cell is neutral
   answerLocked: boolean;  // brief visual state when a correct answer was just given
+  isGoldenAnnounced: boolean; // true when this cell was just announced as golden (before question)
   onClick: () => void;
 }
 
@@ -33,8 +34,10 @@ function getGradientFill(
   owner: TeamColor | null,
   isSelected: boolean,
   isWinPath: boolean,
-  answerLocked: boolean
+  answerLocked: boolean,
+  isGolden: boolean | undefined
 ): string {
+  if (isGolden) return 'url(#hexGoldGrad)';
   if (isWinPath || answerLocked) return 'url(#hexGoldGrad)';
   if (isSelected) return 'url(#hexGoldGrad)';
   if (owner === 'RED') return 'url(#hexRedGrad)';
@@ -52,15 +55,16 @@ function getStroke(owner: TeamColor | null, isSelected: boolean, isWinPath: bool
 
 function getSvgFilter(
   owner: TeamColor | null,
-  isWinPath: boolean
+  isWinPath: boolean,
+  isGolden: boolean | undefined
 ): string | undefined {
+  if (isGolden) return 'url(#glowGold)';
   if (isWinPath) return 'url(#glowGold)';
   if (owner === 'RED') return 'url(#glowRed)';
   if (owner === 'GREEN') return 'url(#glowGreen)';
   return undefined;
 }
 
-// React.memo with custom comparison — only re-render when visible state changes
 export const HexCell = memo(function HexCell({
   cell,
   cx,
@@ -70,14 +74,18 @@ export const HexCell = memo(function HexCell({
   isWinPath,
   isHoverable,
   answerLocked,
+  isGoldenAnnounced,
   onClick,
 }: HexCellProps) {
+  const isGolden = cell.isGolden;
   const points = getHexPoints(cx, cy, size);
   const highlightPts = getTopHighlightPts(cx, cy, size);
-  const fill = getGradientFill(cell.owner, isSelected, isWinPath, answerLocked);
-  const stroke = getStroke(cell.owner, isSelected, isWinPath);
-  const svgFilter = getSvgFilter(cell.owner, isWinPath);
+  const fill = getGradientFill(cell.owner, isSelected, isWinPath, answerLocked, isGolden);
+  const stroke = isGolden ? '#FFD700'
+    : getStroke(cell.owner, isSelected, isWinPath);
+  const svgFilter = getSvgFilter(cell.owner, isWinPath, isGolden);
   const fontSize = Math.max(8, size * 0.44);
+  const strokeWidth = isGolden ? 2.5 : (isSelected || isWinPath ? 2 : cell.owner ? 1.5 : 1);
 
   return (
     <g
@@ -85,20 +93,48 @@ export const HexCell = memo(function HexCell({
       onClick={onClick}
       filter={svgFilter}
     >
-      {/* Main hex polygon with gradient fill */}
+      {/* Golden pulsing ring behind the cell */}
+      {(isGolden || isGoldenAnnounced) && (
+        <polygon
+          points={getHexPoints(cx, cy, size * 1.18)}
+          fill="none"
+          stroke="#FFD700"
+          strokeWidth={1.5}
+          opacity={0.55}
+          style={{
+            pointerEvents: 'none',
+            animation: 'goldPulse 1.2s ease-in-out infinite',
+          }}
+        />
+      )}
+      {/* Outer sparkle ring for just-announced golden cells */}
+      {isGoldenAnnounced && (
+        <polygon
+          points={getHexPoints(cx, cy, size * 1.35)}
+          fill="none"
+          stroke="#FFD700"
+          strokeWidth={1}
+          opacity={0.25}
+          style={{
+            pointerEvents: 'none',
+            animation: 'goldPulse 1.2s ease-in-out infinite 0.3s',
+          }}
+        />
+      )}
+      {/* Main hex polygon */}
       <polygon
         points={points}
         fill={fill}
         stroke={stroke}
-        strokeWidth={isSelected || isWinPath ? 2 : cell.owner ? 1.5 : 1}
+        strokeWidth={strokeWidth}
         opacity={isHoverable && !isSelected ? 1 : cell.owner ? 1 : 0.9}
         style={{ transition: 'fill 0.2s ease, opacity 0.2s ease' }}
       />
-      {/* Inner highlight — top cap for 3D light reflection */}
+      {/* Inner highlight */}
       <polygon
         points={highlightPts}
         fill="white"
-        opacity={cell.owner || isWinPath ? 0.18 : 0.08}
+        opacity={cell.owner || isWinPath || isGolden ? 0.18 : 0.08}
         style={{ pointerEvents: 'none' }}
       />
       {/* Hover overlay */}
@@ -118,20 +154,34 @@ export const HexCell = memo(function HexCell({
         fontSize={fontSize}
         fontFamily="'Cairo', 'Segoe UI', sans-serif"
         fontWeight="700"
-        fill={cell.owner || isWinPath ? '#FFFFFF' : '#7A90B8'}
+        fill={cell.owner || isWinPath || isGolden ? '#FFFFFF' : '#7A90B8'}
         style={{ userSelect: 'none', pointerEvents: 'none' }}
       >
         {cell.letter}
       </text>
+      {/* Golden star badge */}
+      {isGolden && (
+        <text
+          x={cx + size * 0.55}
+          y={cy - size * 0.45}
+          textAnchor="middle"
+          fontSize={fontSize * 0.7}
+          style={{ userSelect: 'none', pointerEvents: 'none' }}
+        >
+          ✨
+        </text>
+      )}
     </g>
   );
 }, (prev, next) =>
   prev.cell.owner === next.cell.owner &&
   prev.cell.letter === next.cell.letter &&
+  prev.cell.isGolden === next.cell.isGolden &&
   prev.isSelected === next.isSelected &&
   prev.isWinPath === next.isWinPath &&
   prev.isHoverable === next.isHoverable &&
   prev.answerLocked === next.answerLocked &&
+  prev.isGoldenAnnounced === next.isGoldenAnnounced &&
   prev.cx === next.cx &&
   prev.cy === next.cy &&
   prev.size === next.size
