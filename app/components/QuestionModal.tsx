@@ -28,6 +28,7 @@ interface QuestionModalProps {
   phase: ModalPhase;
   buzzerTeam: TeamColor | null; // which team buzzed in (null if no one yet)
   openAnswerTeam: TeamColor | null; // team that can directly answer in BUZZER_OPEN
+  openRevealStartTime: number | null; // timestamp when BUZZER_OPEN reveal phase started
   mayBuzz: boolean;             // can this player's team press the buzzer?
   onAnswer: (index: number) => void;
   onBuzzIn: () => void;
@@ -47,6 +48,7 @@ export function QuestionModal({
   phase,
   buzzerTeam,
   openAnswerTeam,
+  openRevealStartTime,
   mayBuzz,
   onAnswer,
   onBuzzIn,
@@ -54,6 +56,10 @@ export function QuestionModal({
   const [timeLeft, setTimeLeft] = useState(() => endTime > 0 ? Math.max(0, Math.ceil((endTime - Date.now()) / 1000)) : 0);
   const [selected, setSelected] = useState<number | null>(null);
   const [buzzPressed, setBuzzPressed] = useState(false);
+  // Reveal count for BUZZER_OPEN gradual option display
+  const [revealedCount, setRevealedCount] = useState<number>(() =>
+    isOpenPhase && openRevealStartTime !== null ? 0 : options.length
+  );
 
   const isBuzzerPhase = phase === 'BUZZER' || phase === 'BUZZER_SECOND_CHANCE';
   const isOpenPhase = phase === 'BUZZER_OPEN';
@@ -83,12 +89,38 @@ export function QuestionModal({
   useEffect(() => {
     setSelected(null);
     setBuzzPressed(false);
+    setRevealedCount(0);
   }, [text]);
 
   // Reset selection when phase changes to BUZZER_OPEN
   useEffect(() => {
     if (isOpenPhase) setSelected(null);
   }, [isOpenPhase]);
+
+  // Gradual reveal effect for BUZZER_OPEN options
+  useEffect(() => {
+    if (!isOpenPhase || openRevealStartTime === null) {
+      setRevealedCount(options.length);
+      return;
+    }
+    const updateReveal = () => {
+      const elapsed = Date.now() - openRevealStartTime;
+      const count = elapsed < 2000 ? 0
+        : elapsed < 3000 ? 1
+        : elapsed < 4000 ? 2
+        : elapsed < 5000 ? 3
+        : options.length;
+      setRevealedCount(count);
+      return count;
+    };
+    const initial = updateReveal();
+    if (initial >= options.length) return;
+    const interval = setInterval(() => {
+      const c = updateReveal();
+      if (c >= options.length) clearInterval(interval);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isOpenPhase, openRevealStartTime, options.length]);
 
   const handleAnswer = (index: number) => {
     if (!canAnswer) return;
@@ -202,94 +234,113 @@ export function QuestionModal({
                 className="text-center py-3 px-5 rounded-xl text-sm font-bold"
                 style={{ color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.04)' }}
               >
-                {isHost ? '👁 الكابتن — مشاهدة' : buzzerTeam ? `🎯 الفريق ${buzzerTeamLabel} ينتظر للإجابة...` : '⏳ انتظر...'}
+                {isHost ? '👁 المقدم — مشاهدة' : buzzerTeam ? `🎯 الفريق ${buzzerTeamLabel} ينتظر للإجابة...` : '⏳ انتظر...'}
               </div>
             )}
           </div>
         )}
 
         {/* ─── طور BUZZER_OPEN ─── */}
-        {isOpenPhase && (
-          <>
-            {/* إعلان الوقت المفتوح */}
-            <div
-              className="text-center py-2 px-4 rounded-xl mb-3"
-              style={{ background: 'rgba(0,255,127,0.06)', border: '1px solid rgba(0,255,127,0.2)' }}
-            >
-              <p className="text-sm font-black" style={{ color: '#00FF7F', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
-                ⚡ وقت مفتوح! الفريق {buzzerTeamLabel} لم يجب
-              </p>
-              <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>
-                الفريق <span style={{ color: openTeamColor, fontWeight: 'bold' }}>{openTeamLabel}</span> — أجب الآن!
-              </p>
-            </div>
-
-            {/* شريط المؤقت — أخضر هادئ */}
-            <div
-              className="h-2 rounded-full mb-2 overflow-hidden"
-              style={{ background: 'rgba(255,255,255,0.06)' }}
-            >
+        {isOpenPhase && (() => {
+          const effectiveRevealed = (correctIndex !== null || answerLocked) ? options.length : revealedCount;
+          const allRevealed = effectiveRevealed >= options.length;
+          return (
+            <>
+              {/* إعلان الوقت المفتوح */}
               <div
-                className="h-full rounded-full"
-                style={{
-                  width: `${timerPercent}%`,
-                  background: `linear-gradient(90deg, ${timerColor}, ${timerColor}80)`,
-                  boxShadow: `0 0 6px ${timerColor}`,
-                  transition: 'width 0.25s linear',
-                }}
-              />
-            </div>
-            <div
-              className="text-center text-2xl font-black mb-3"
-              style={{
-                color: timerColor,
-                textShadow: `0 0 10px ${timerColor}`,
-                fontFamily: 'Courier New, monospace',
-              }}
-            >
-              {timeLeft}
-            </div>
-
-            {/* الخيارات المباشرة للفريق المفتوح */}
-            {(canAnswer || selected !== null || correctIndex !== null) ? (
-              <div className="grid grid-cols-1 gap-2">
-                {options.map((opt, i) => (
-                  <button
-                    key={i}
-                    onClick={() => handleAnswer(i)}
-                    disabled={!canAnswer}
-                    className={getOptionStyle(i, selected, correctIndex, answerLocked, timeLeft, canAnswer)}
-                  >
-                    <span className="font-black ml-2 text-sm" style={{ color: '#C9A227' }}>
-                      {['أ', 'ب', 'ج', 'د'][i]}.
-                    </span>
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div
-                className="text-center py-4 px-5 rounded-xl"
-                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+                className="text-center py-2 px-4 rounded-xl mb-3"
+                style={{ background: 'rgba(0,255,127,0.06)', border: '1px solid rgba(0,255,127,0.2)' }}
               >
-                {isHost ? (
-                  <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>👁 الكابتن — مشاهدة</p>
-                ) : (
-                  <p className="font-black text-base" style={{ color: openTeamColor }}>
-                    🎯 الفريق {openTeamLabel} يجيب الآن...
-                  </p>
-                )}
+                <p className="text-sm font-black" style={{ color: '#00FF7F', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
+                  ⚡ وقت مفتوح! الفريق {buzzerTeamLabel} لم يجب
+                </p>
+                <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                  الفريق <span style={{ color: openTeamColor, fontWeight: 'bold' }}>{openTeamLabel}</span> — {allRevealed ? 'أجب الآن!' : 'تظهر الخيارات...'}
+                </p>
               </div>
-            )}
 
-            {answerLocked && (
-              <p className="text-center text-sm font-black mt-4"
-                style={{ color: '#69F0AE', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
-                ✓ تم تسجيل الإجابة الصحيحة!
-              </p>
-            )}
-          </>
-        )}
+              {/* شريط المؤقت — يظهر فقط بعد اكتمال الخيارات */}
+              {allRevealed && (
+                <>
+                  <div
+                    className="h-2 rounded-full mb-2 overflow-hidden"
+                    style={{ background: 'rgba(255,255,255,0.06)' }}
+                  >
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${timerPercent}%`,
+                        background: `linear-gradient(90deg, ${timerColor}, ${timerColor}80)`,
+                        boxShadow: `0 0 6px ${timerColor}`,
+                        transition: 'width 0.25s linear',
+                      }}
+                    />
+                  </div>
+                  <div
+                    className="text-center text-2xl font-black mb-3"
+                    style={{
+                      color: timerColor,
+                      textShadow: `0 0 10px ${timerColor}`,
+                      fontFamily: 'Courier New, monospace',
+                    }}
+                  >
+                    {timeLeft}
+                  </div>
+                </>
+              )}
+
+              {/* الخيارات بظهور تدريجي */}
+              {(canAnswer || selected !== null || correctIndex !== null || !allRevealed) ? (
+                <div className="grid grid-cols-1 gap-2">
+                  {options.map((opt, i) => {
+                    const isRevealed = i < effectiveRevealed;
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          transition: 'opacity 0.35s ease, transform 0.35s ease',
+                          opacity: isRevealed ? 1 : 0,
+                          transform: isRevealed ? 'translateY(0)' : 'translateY(10px)',
+                        }}
+                      >
+                        <button
+                          onClick={() => isRevealed && handleAnswer(i)}
+                          disabled={!canAnswer || !isRevealed}
+                          className={getOptionStyle(i, selected, correctIndex, answerLocked, timeLeft, canAnswer && isRevealed)}
+                        >
+                          <span className="font-black ml-2 text-sm" style={{ color: '#C9A227' }}>
+                            {['أ', 'ب', 'ج', 'د'][i]}.
+                          </span>
+                          {opt}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div
+                  className="text-center py-4 px-5 rounded-xl"
+                  style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+                >
+                  {isHost ? (
+                    <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>👁 المقدم — مشاهدة</p>
+                  ) : (
+                    <p className="font-black text-base" style={{ color: openTeamColor }}>
+                      🎯 الفريق {openTeamLabel} يجيب الآن...
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {answerLocked && (
+                <p className="text-center text-sm font-black mt-4"
+                  style={{ color: '#69F0AE', textShadow: '0 0 8px rgba(0,255,127,0.5)' }}>
+                  ✓ تم تسجيل الإجابة الصحيحة!
+                </p>
+              )}
+            </>
+          );
+        })()}
 
         {/* ─── طور ANSWERING ─── */}
         {phase === 'ANSWERING' && (
@@ -360,7 +411,7 @@ export function QuestionModal({
               </p>
             )}
             {isHost && (
-              <p className="text-center text-eid-sand/30 mt-3 text-xs tracking-wide">الكابتن — مشاهدة فقط</p>
+              <p className="text-center text-eid-sand/30 mt-3 text-xs tracking-wide">المقدم — مشاهدة فقط</p>
             )}
           </>
         )}

@@ -183,7 +183,7 @@ export default function RoomPage() {
             className="text-sm font-bold"
             style={{ color: '#C9A227', textShadow: '0 0 10px rgba(201,162,39,0.5)' }}
           >
-            ★ أنت الكابتن — مدير اللعبة
+            ★ أنت المقدم — مدير اللعبة
           </span>
         </div>
       )}
@@ -311,7 +311,7 @@ export default function RoomPage() {
         </div>
       ) : (
         <div className="card w-full text-center">
-          <p className="text-eid-sand/50 text-sm">في انتظار الكابتن ليبدأ اللعبة...</p>
+          <p className="text-eid-sand/50 text-sm">في انتظار المقدم ليبدأ اللعبة...</p>
         </div>
       )}
     </main>

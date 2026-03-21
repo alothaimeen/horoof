@@ -9,6 +9,7 @@ import { QuestionModal } from '../../components/QuestionModal';
 import { RoundTracker } from '../../components/RoundTracker';
 import { DairataAlDaw } from '../../components/DairataAlDaw';
 import { Leaderboard, type LeaderboardData } from '../../components/Leaderboard';
+import { HostDashboard } from '../../components/HostDashboard';
 import { SoundEngine } from '@/lib/soundEngine';
 
 type GamePhase = 'CELL_SELECTION' | 'BUZZER' | 'BUZZER_SECOND_CHANCE' | 'BUZZER_OPEN' | 'ANSWERING' | 'ANSWER_REVEAL' | 'ROUND_OVER' | 'GAME_OVER' | 'DAIRAT_AL_DAW';
@@ -65,6 +66,11 @@ export default function PlayPage() {
   const [goldenCell, setGoldenCell] = useState<{ col: number; row: number } | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardData | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
+  const [openRevealStartTime, setOpenRevealStartTime] = useState<number | null>(null);
+  const [openNoAnswer, setOpenNoAnswer] = useState<{ correctIndex: number; currentTeam: TeamColor } | null>(null);
+  const [players, setPlayers] = useState<Array<{ id: string; name: string; isConnected: boolean; team: TeamColor | null; status: 'active' | 'away' }>>([]);
+  const openNoAnswerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [dawState, setDawState] = useState<DawClientState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +125,7 @@ export default function PlayPage() {
       setCorrectPlayerName(null);
       setBuzzerTeam(null);
       setOpenAnswerTeam(null);
+      setOpenRevealStartTime(null);
       setGoldenCell(null);
       setTimerMaxSec(30);
     };
@@ -158,6 +165,7 @@ export default function PlayPage() {
       setCurrentRound(data.round);
       setRoundWins(data.roundWins);
       if (data.players) {
+        setPlayers(data.players.map((p: any) => ({ ...p, status: p.status ?? 'active' })));
         const me = data.players.find((p: any) => p.id === myIdRef.current);
         if (me?.team) setMyTeam(me.team);
       }
@@ -256,8 +264,87 @@ export default function PlayPage() {
       if (p === 'BUZZER_OPEN') {
         setOpenAnswerTeam(answeringTeam ?? null);
         setTimerMaxSec(timeLimit ?? 30);
+        setOpenRevealStartTime(Date.now());
         if (et) setQuestion(prev => prev ? { ...prev, endTime: et } : prev);
       }
+      if (p === 'BUZZER') {
+        // buzz cancelled by host — reset buzzer state
+        setBuzzerTeam(null);
+        setAnswerLocked(false);
+        if (et === 0 || !et) setQuestion(prev => prev ? { ...prev, endTime: 0 } : prev);
+      }
+    });
+
+    // --- HOST: BUZZER CANCELLED ---
+    socket.on('buzz_cancelled', () => {
+      setBuzzerTeam(null);
+      setAnswerLocked(false);
+      setQuestion(prev => prev ? { ...prev, endTime: 0 } : prev);
+    });
+
+    // --- HOST: BUZZER_OPEN timed out with no answer ---
+    socket.on('buzzer_open_no_answer', ({ correctIndex: ci, currentTeam: ct }: any) => {
+      setCorrectIndex(ci);
+      setAnswerLocked(true);
+      setOpenNoAnswer({ correctIndex: ci, currentTeam: ct });
+      // Auto-clear after 8s (safety net)
+      if (openNoAnswerTimerRef.current) clearTimeout(openNoAnswerTimerRef.current);
+      openNoAnswerTimerRef.current = setTimeout(() => {
+        setOpenNoAnswer(null);
+        setPhase('CELL_SELECTION');
+        setCurrentTeam(ct);
+        setQuestion(null);
+        setSelectedCell(null);
+        setCorrectIndex(null);
+        setAnswerLocked(false);
+        setCorrectPlayerName(null);
+        setBuzzerTeam(null);
+        setOpenAnswerTeam(null);
+        setOpenRevealStartTime(null);
+        setGoldenCell(null);
+        setTimerMaxSec(30);
+      }, 8000);
+    });
+
+    // --- GAME PAUSED/RESUMED ---
+    socket.on('game_paused', () => {
+      setIsPaused(true);
+    });
+
+    socket.on('game_resumed', ({ endTime: et }: any) => {
+      setIsPaused(false);
+      if (et) setQuestion(prev => prev ? { ...prev, endTime: et } : prev);
+    });
+
+    // --- SCORE ADJUSTED ---
+    socket.on('score_adjusted', ({ roundWins: rw }: any) => {
+      setRoundWins(rw);
+    });
+
+    // --- PLAYER STATUS CHANGED ---
+    socket.on('player_status_changed', ({ players: updatedPlayers }: any) => {
+      if (updatedPlayers) {
+        setPlayers(updatedPlayers.map((p: any) => ({ ...p, status: p.status ?? 'active' })));
+      }
+    });
+
+    // --- PLAYER UPDATE (connection/team changes) ---
+    socket.on('player_update', ({ players: updatedPlayers }: any) => {
+      if (updatedPlayers) {
+        setPlayers(prev => {
+          const map = new Map(prev.map(p => [p.id, p]));
+          for (const up of updatedPlayers) {
+            const existing = map.get(up.id);
+            map.set(up.id, { ...up, status: existing?.status ?? 'active' });
+          }
+          return [...map.values()];
+        });
+      }
+    });
+
+    // --- KICKED ---
+    socket.on('kicked', () => {
+      router.replace('/');
     });
 
     // --- ROUND OVER ---
@@ -350,6 +437,8 @@ export default function PlayPage() {
         'answer_timeout', 'phase_change', 'round_over', 'round_start',
         'game_over', 'daw_start', 'daw_question', 'daw_result', 'daw_end',
         'host_changed', 'error',
+        'buzz_cancelled', 'buzzer_open_no_answer', 'game_paused', 'game_resumed',
+        'score_adjusted', 'player_status_changed', 'player_update', 'kicked',
       ];
       events.forEach(e => socket.off(e));
     };
@@ -456,7 +545,7 @@ export default function PlayPage() {
         )}
         {!isHost && (
           <div className="card text-center mt-6">
-            <p className="text-eid-sand/50 text-sm">في انتظار الكابتن...</p>
+            <p className="text-eid-sand/50 text-sm">في انتظار المقدم...</p>
           </div>
         )}
       </main>
@@ -468,7 +557,17 @@ export default function PlayPage() {
   const isMyTurn = !isHost && myTeam === currentTeam && phase === 'CELL_SELECTION';
 
   return (
-    <main className="min-h-dvh flex flex-col px-2 py-2 max-w-2xl mx-auto" dir="rtl">
+    <main className="min-h-dvh flex flex-col px-2 py-2 max-w-2xl mx-auto" style={{ paddingBottom: isHost ? '7rem' : undefined }} dir="rtl">
+      {/* Pause banner */}
+      {isPaused && (
+        <div
+          className="fixed top-0 left-0 right-0 z-50 py-2 text-center text-sm font-black"
+          style={{ background: 'rgba(255,200,0,0.15)', borderBottom: '2px solid rgba(255,200,0,0.5)', color: '#FFD700' }}
+        >
+          ⏸ اللعبة متوقفة مؤقتاً من قِبل المقدم...
+        </div>
+      )}
+
       {/* Error toast */}
       {error && (
         <div className="fixed top-4 left-4 right-4 z-50 bg-red-900/90 text-red-200 px-4 py-3 rounded-xl text-center text-sm">
@@ -526,7 +625,7 @@ export default function PlayPage() {
         </div>
       )}
       {isHost && (
-        <div className="text-center text-xs text-eid-sand/30 mb-1">★ الكابتن — مشاهدة</div>
+        <div className="text-center text-xs text-eid-sand/30 mb-1">★ المقدم — مشاهدة</div>
       )}
 
       {/* HexGrid */}
@@ -541,6 +640,9 @@ export default function PlayPage() {
         answerLocked={answerLocked}
         goldenCell={goldenCell}
         onCellClick={handleCellClick}
+        onHostCellOverride={isHost ? (col, row, owner) => {
+          getSocket().emit('host_force_cell_owner', { roomCode: code, col, row, owner });
+        } : undefined}
       />
 
       {/* Correct player announcement */}
@@ -569,10 +671,38 @@ export default function PlayPage() {
           phase={phase as any}
           buzzerTeam={buzzerTeam}
           openAnswerTeam={openAnswerTeam}
+          openRevealStartTime={openRevealStartTime}
           mayBuzz={!isHost && myTeam !== null && myTeam !== buzzerTeam && phase !== 'BUZZER_OPEN'}
           onAnswer={handleSubmitAnswer}
           onBuzzIn={handleBuzzIn}
         />
+      )}
+
+      {/* openNoAnswer: host can manually continue */}
+      {openNoAnswer && isHost && (
+        <div className="fixed inset-0 z-[55] flex items-end justify-center p-4 pointer-events-none">
+          <button
+            className="pointer-events-auto px-8 py-3 rounded-xl font-black text-base"
+            style={{
+              background: 'rgba(201,162,39,0.15)',
+              border: '2px solid rgba(201,162,39,0.6)',
+              color: '#C9A227',
+              boxShadow: '0 0 20px rgba(201,162,39,0.3)',
+              marginBottom: '6rem',
+            }}
+            onClick={() => {
+              if (openNoAnswerTimerRef.current) clearTimeout(openNoAnswerTimerRef.current);
+              setOpenNoAnswer(null);
+              setPhase('CELL_SELECTION');
+              setCurrentTeam(openNoAnswer.currentTeam);
+              setQuestion(null); setSelectedCell(null); setCorrectIndex(null); setAnswerLocked(false);
+              setCorrectPlayerName(null); setBuzzerTeam(null); setOpenAnswerTeam(null);
+              setOpenRevealStartTime(null); setGoldenCell(null); setTimerMaxSec(30);
+            }}
+          >
+            ✓ تم إعلان الإجابة — تالي ←
+          </button>
+        </div>
       )}
 
       {/* Round Over overlay */}
@@ -607,10 +737,22 @@ export default function PlayPage() {
               </button>
             )}
             {!isHost && (
-              <p className="text-eid-sand/50 text-sm mt-4">في انتظار الكابتن...</p>
+              <p className="text-eid-sand/50 text-sm mt-4">في انتظار المقدم...</p>
             )}
           </div>
         </div>
+      )}
+
+      {/* Host Dashboard */}
+      {isHost && (
+        <HostDashboard
+          roomCode={code}
+          phase={phase}
+          isPaused={isPaused}
+          players={players}
+          roundWins={roundWins}
+          hasActiveQuestion={!!question}
+        />
       )}
     </main>
   );

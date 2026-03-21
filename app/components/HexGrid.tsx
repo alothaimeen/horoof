@@ -27,6 +27,7 @@ interface HexGridProps {
   answerLocked?: boolean;
   goldenCell?: { col: number; row: number } | null; // announced golden cell
   onCellClick?: (col: number, row: number) => void;
+  onHostCellOverride?: (col: number, row: number, owner: TeamColor | null) => void;
 }
 
 // Converts (col,row) → pixel center using Odd-Q vertical hex layout with optional offset
@@ -71,9 +72,12 @@ export function HexGrid({
   answerLocked = false,
   goldenCell,
   onCellClick,
+  onHostCellOverride,
 }: HexGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hexSize, setHexSize] = useState(30);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [hostOverrideCell, setHostOverrideCell] = useState<{ col: number; row: number; letter: string } | null>(null);
 
   // Compute hex size dynamically based on container width
   useEffect(() => {
@@ -93,6 +97,20 @@ export function HexGrid({
   const cellMap = buildCellMap(cells);
   const winPathSet = new Set(winningPath ?? []);
   const isMyTurn = !isHost && myTeam === currentTeam && phase === 'CELL_SELECTION';
+
+  const startLongPress = useCallback((col: number, row: number) => {
+    longPressTimerRef.current = setTimeout(() => {
+      const cell = cellMap.get(cellKey(col, row));
+      if (cell) setHostOverrideCell({ col, row, letter: cell.letter });
+    }, 600);
+  }, [cellMap]);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
 
   // Offset to accommodate border hex cells at col=-1 and row=-1
   const xOff = hexSize * 2;
@@ -234,6 +252,9 @@ export function HexGrid({
               answerLocked={answerLocked && isSel}
               isGoldenAnnounced={isGoldenAnnounced}
               onClick={() => handleClick(cell.col, cell.row)}
+              onPointerDown={isHost && onHostCellOverride ? () => startLongPress(cell.col, cell.row) : undefined}
+              onPointerUp={isHost && onHostCellOverride ? cancelLongPress : undefined}
+              onPointerLeave={isHost && onHostCellOverride ? cancelLongPress : undefined}
             />
           );
         })}
@@ -242,6 +263,47 @@ export function HexGrid({
       <div className="flex items-center gap-1 mt-1 px-1">
         <span className="text-xs text-green-400 font-bold">↑ الأخضر يصل من الأعلى إلى الأسفل ↓</span>
       </div>
+
+      {/* Host cell override popup */}
+      {isHost && hostOverrideCell && onHostCellOverride && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.75)' }}
+          onClick={() => setHostOverrideCell(null)}
+        >
+          <div
+            className="rounded-2xl p-5 max-w-xs w-full mx-4"
+            style={{ background: 'rgba(6,10,23,0.99)', border: '1px solid rgba(201,162,39,0.3)', boxShadow: '0 0 30px rgba(0,0,0,0.8)' }}
+            onClick={e => e.stopPropagation()}
+            dir="rtl"
+          >
+            <h3 className="text-center font-black mb-1" style={{ color: '#C9A227' }}>تعيين الخلية</h3>
+            <p className="text-center text-4xl font-black mb-4" style={{ color: '#E8E8F0' }}>{hostOverrideCell.letter}</p>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => { onHostCellOverride(hostOverrideCell.col, hostOverrideCell.row, 'RED'); setHostOverrideCell(null); }}
+                className="py-3 rounded-xl font-black text-sm"
+                style={{ background: 'rgba(255,44,44,0.15)', border: '1px solid rgba(255,44,44,0.4)', color: '#FF4444' }}
+              >● أحمر</button>
+              <button
+                onClick={() => { onHostCellOverride(hostOverrideCell.col, hostOverrideCell.row, 'GREEN'); setHostOverrideCell(null); }}
+                className="py-3 rounded-xl font-black text-sm"
+                style={{ background: 'rgba(0,200,83,0.1)', border: '1px solid rgba(0,200,83,0.3)', color: '#00FF7F' }}
+              >● أخضر</button>
+              <button
+                onClick={() => { onHostCellOverride(hostOverrideCell.col, hostOverrideCell.row, null); setHostOverrideCell(null); }}
+                className="py-3 rounded-xl font-black text-sm"
+                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#888' }}
+              >محايد</button>
+            </div>
+            <button
+              onClick={() => setHostOverrideCell(null)}
+              className="w-full mt-3 text-sm font-bold py-2 rounded-xl"
+              style={{ color: 'rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.03)' }}
+            >إلغاء</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

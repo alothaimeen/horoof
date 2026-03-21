@@ -12,6 +12,9 @@ interface HexCellProps {
   answerLocked: boolean;  // brief visual state when a correct answer was just given
   isGoldenAnnounced: boolean; // true when this cell was just announced as golden (before question)
   onClick: () => void;
+  onPointerDown?: () => void;
+  onPointerUp?: () => void;
+  onPointerLeave?: () => void;
 }
 
 function getHexPoints(cx: number, cy: number, size: number): string {
@@ -76,6 +79,9 @@ export const HexCell = memo(function HexCell({
   answerLocked,
   isGoldenAnnounced,
   onClick,
+  onPointerDown,
+  onPointerUp,
+  onPointerLeave,
 }: HexCellProps) {
   const isGolden = cell.isGolden;
   const points = getHexPoints(cx, cy, size);
@@ -91,6 +97,9 @@ export const HexCell = memo(function HexCell({
     <g
       style={{ cursor: isHoverable ? 'pointer' : 'default' }}
       onClick={onClick}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onPointerLeave={onPointerLeave}
       filter={svgFilter}
     >
       {/* Golden pulsing ring behind the cell */}
@@ -130,6 +139,17 @@ export const HexCell = memo(function HexCell({
         opacity={isHoverable && !isSelected ? 1 : cell.owner ? 1 : 0.9}
         style={{ transition: 'fill 0.2s ease, opacity 0.2s ease' }}
       />
+      {/* Team color border ring for claimed golden cells */}
+      {isGolden && cell.owner && (
+        <polygon
+          points={getHexPoints(cx, cy, size * 1.1)}
+          fill="none"
+          stroke={cell.owner === 'RED' ? '#FF4444' : '#00FF7F'}
+          strokeWidth={2.5}
+          opacity={0.9}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
       {/* Inner highlight */}
       <polygon
         points={highlightPts}
