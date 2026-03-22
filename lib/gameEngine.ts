@@ -210,8 +210,12 @@ export function initGameEngine(io: Server) {
         socket.join(roomCode);
 
         const updatedSession = await prisma.gameSession.findUnique({ where: { code: roomCode }, include: { players: { orderBy: { joinOrder: 'asc' } } } });
-        const isHost = updatedSession!.hostId === player.id;
+        let isHost = updatedSession!.hostId === player.id;
         const game = activeGames.get(roomCode);
+        // Safety: a team player should never be the host during an active game
+        if (isHost && game && (game.redTeam.has(player.id) || game.greenTeam.has(player.id))) {
+          isHost = false;
+        }
         const playersData = updatedSession!.players.map(p => ({ id: p.id, name: p.name, isConnected: p.isConnected, team: (p as any).team ?? null, joinOrder: p.joinOrder }));
 
         socket.emit('room_joined', { playerId: player.id, isHost, players: playersData, gameStatus: session.status, phase: game?.phase ?? null });
@@ -847,9 +851,9 @@ export function initGameEngine(io: Server) {
             }
           }
         }
-        // انقل لقب المقدم فقط في حالة اللعب وبعد فترة سماح (5 ثوان) لتجنب النقل العرضي عند تحديث الصفحة
+        // انقل لقب المقدم فقط في غرفة الانتظار — أثناء اللعب لا ننقل المقدم لأن كل المتصلين لديهم فرق
         const currentSession = await prisma.gameSession.findUnique({ where: { code: roomCode }, select: { hostId: true, status: true } });
-        if (currentSession?.hostId === playerId && currentSession.status !== 'WAITING') {
+        if (currentSession?.hostId === playerId && currentSession.status === 'WAITING') {
           const transferTimeout = setTimeout(async () => {
             pendingHostTransfers.delete(playerId);
             try {

@@ -60,6 +60,7 @@ export default function PlayPage() {
   const [myTeam, setMyTeam] = useState<TeamColor | null>(null);
   const [isHost, setIsHost] = useState(false);
   const myIdRef = useRef('');
+  const myTeamRef = useRef<TeamColor | null>(null);
   const [buzzerTeam, setBuzzerTeam] = useState<TeamColor | null>(null);
   const [buzzerPlayerName, setBuzzerPlayerName] = useState<string | null>(null);
   const [openAnswerTeam, setOpenAnswerTeam] = useState<TeamColor | null>(null);
@@ -161,9 +162,12 @@ export default function PlayPage() {
     socket.on('room_joined', (data: any) => {
       myIdRef.current = data.playerId;
       localStorage.setItem('playerId', data.playerId);
-      setIsHost(data.isHost);
       const me = data.players?.find((p: any) => p.id === data.playerId);
-      setMyTeam(me?.team ?? null);
+      const team = me?.team ?? null;
+      setMyTeam(team);
+      myTeamRef.current = team;
+      // Safety: a player with a team should never be treated as host
+      setIsHost(data.isHost && !team);
       if (data.players) {
         setPlayers(data.players.map((p: any) => ({ ...p, status: p.status ?? 'active' })));
       }
@@ -204,7 +208,7 @@ export default function PlayPage() {
       if (data.players) {
         setPlayers(data.players.map((p: any) => ({ ...p, status: p.status ?? 'active' })));
         const me = data.players.find((p: any) => p.id === myIdRef.current);
-        if (me?.team) setMyTeam(me.team);
+        if (me?.team) { setMyTeam(me.team); myTeamRef.current = me.team; }
       }
       // Show rules screen at game start
       setShowRules(true);
@@ -512,7 +516,8 @@ export default function PlayPage() {
 
     // --- META ---
     socket.on('host_changed', ({ newHostId }: any) => {
-      if (newHostId === myIdRef.current) setIsHost(true);
+      // Safety: never promote a team player to host during gameplay
+      if (newHostId === myIdRef.current && !myTeamRef.current) setIsHost(true);
     });
 
     socket.on('error', ({ message }: any) => {
