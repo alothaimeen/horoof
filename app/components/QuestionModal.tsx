@@ -34,6 +34,8 @@ interface QuestionModalProps {
   buzzerOpenTime: number | null;
   mayBuzz: boolean;
   isTiebreaker?: boolean;
+  buzzerPlayerName?: string | null;
+  answerPlayerName?: string | null;
   onAnswer: (index: number) => void;
   onBuzzIn: () => void;
 }
@@ -57,13 +59,13 @@ export function QuestionModal({
   buzzerOpenTime,
   mayBuzz,
   isTiebreaker = false,
+  buzzerPlayerName,
+  answerPlayerName,
   onAnswer,
   onBuzzIn,
 }: QuestionModalProps) {
   const [timeLeft, setTimeLeft] = useState<number>(timerMaxSec);
   const [revealedCount, setRevealedCount] = useState<number>(0);
-  const [buzzerCanBuzz, setBuzzerCanBuzz] = useState<boolean>(false);
-  const [buzzerCountdown, setBuzzerCountdown] = useState<number>(30);
   const rafRef = useRef<number | null>(null);
 
   const isAnsweringPhase = phase === 'ANSWERING' || (phase === 'TIEBREAKER' && buzzerTeam !== null);
@@ -77,9 +79,9 @@ export function QuestionModal({
   const teamColor = (team: TeamColor) => team === 'RED' ? '#FF4444' : '#00FF7F';
   const teamLabel = (team: TeamColor) => team === 'RED' ? '🔴 الفريق الأحمر' : '🟢 الفريق الأخضر';
 
-  // ── Generic countdown (ANSWERING / BUZZER_OPEN / BUZZER_SECOND_CHANCE) ──
+  // ── Generic countdown (ANSWERING / BUZZER_OPEN / BUZZER_SECOND_CHANCE / BUZZER) ──
   useEffect(() => {
-    if (!isAnsweringPhase && !isOpenPhase && phase !== 'BUZZER_SECOND_CHANCE') return;
+    if (!isAnsweringPhase && !isOpenPhase && phase !== 'BUZZER_SECOND_CHANCE' && !isBuzzerPhase) return;
     if (endTime <= 0) return;
 
     const tick = () => {
@@ -90,14 +92,12 @@ export function QuestionModal({
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [isAnsweringPhase, isOpenPhase, phase, endTime]);
+  }, [isAnsweringPhase, isOpenPhase, phase, endTime, isBuzzerPhase]);
 
-  // ── Gradual option reveal + buzzer countdown (BUZZER / TIEBREAKER) ──
+  // ── Gradual option reveal (BUZZER / TIEBREAKER) ──
   useEffect(() => {
     if (!isBuzzerPhase || !optionRevealTime) {
       if (!isBuzzerPhase) setRevealedCount(options.length);
-      setBuzzerCanBuzz(false);
-      setBuzzerCountdown(30);
       return;
     }
 
@@ -106,19 +106,12 @@ export function QuestionModal({
       const elapsed = now - optionRevealTime;
       const count = elapsed < 0 ? 0 : Math.min(options.length, Math.floor(elapsed / 1000) + 1);
       setRevealedCount(count);
-
-      if (buzzerOpenTime && now >= buzzerOpenTime) {
-        setBuzzerCanBuzz(true);
-        setBuzzerCountdown(Math.max(0, Math.ceil((buzzerOpenTime + 30000 - now) / 1000)));
-      } else {
-        setBuzzerCanBuzz(false);
-      }
     };
 
-    update(); // run immediately on mount/dependency change
+    update();
     const interval = setInterval(update, 200);
     return () => clearInterval(interval);
-  }, [isBuzzerPhase, optionRevealTime, buzzerOpenTime, options.length]);
+  }, [isBuzzerPhase, optionRevealTime, options.length]);
 
   const borderColor = currentTeam === 'RED' ? 'rgba(255,68,68,0.5)' : 'rgba(0,255,127,0.5)';
   const glowColor = currentTeam === 'RED' ? 'rgba(255,44,44,0.2)' : 'rgba(0,255,127,0.2)';
@@ -158,7 +151,7 @@ export function QuestionModal({
           </div>
 
           {/* Timer badge */}
-          {isAnsweringPhase && (
+          {(isAnsweringPhase || isBuzzerPhase) && endTime > 0 && (
             <div
               className="w-12 h-12 rounded-xl flex items-center justify-center text-xl font-black"
               style={{
@@ -168,18 +161,6 @@ export function QuestionModal({
               }}
             >
               {timeLeft}
-            </div>
-          )}
-          {isBuzzerPhase && buzzerCanBuzz && (
-            <div
-              className="w-12 h-12 rounded-xl flex items-center justify-center text-xl font-black"
-              style={{
-                background: buzzerCountdown <= 5 ? 'rgba(255,44,44,0.3)' : 'rgba(255,255,255,0.07)',
-                color: buzzerCountdown <= 5 ? '#FF4444' : 'rgba(255,255,255,0.8)',
-                border: `1.5px solid ${buzzerCountdown <= 5 ? 'rgba(255,44,44,0.5)' : 'rgba(255,255,255,0.1)'}`,
-              }}
-            >
-              {buzzerCountdown}
             </div>
           )}
         </div>
@@ -249,7 +230,7 @@ export function QuestionModal({
         </div>
 
         {/* Buzz-in button (BUZZER / TIEBREAKER / BUZZER_SECOND_CHANCE phases) */}
-        {((isBuzzerPhase && buzzerCanBuzz && !buzzerTeam) || phase === 'BUZZER_SECOND_CHANCE') && mayBuzz && (
+        {((isBuzzerPhase && !buzzerTeam) || phase === 'BUZZER_SECOND_CHANCE') && mayBuzz && (
           <button
             onClick={onBuzzIn}
             className="w-full py-4 rounded-xl font-black text-lg tracking-wide transition-all duration-150 active:scale-95"
@@ -274,12 +255,17 @@ export function QuestionModal({
             }}
           >
             <p className="text-sm font-bold" style={{ color: teamColor(buzzerTeam) }}>
-              {teamLabel(buzzerTeam)} ضغط الجرس!
+              🔔 {buzzerPlayerName ? buzzerPlayerName : teamLabel(buzzerTeam)} ضغط الجرس!
             </p>
+            {buzzerPlayerName && (
+              <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                {teamLabel(buzzerTeam)}
+              </p>
+            )}
           </div>
         )}
 
-        {/* ANSWERING: waiting for host to accept/reject or contestant to answer */}
+        {/* ANSWERING: show who is answering */}
         {isAnsweringPhase && buzzerTeam && (
           <div
             className="rounded-xl p-3 text-center"
@@ -289,13 +275,25 @@ export function QuestionModal({
             }}
           >
             <p className="text-sm font-bold" style={{ color: teamColor(buzzerTeam) }}>
-              {teamLabel(buzzerTeam)} يجيب الآن
+              ✏️ {buzzerPlayerName ? buzzerPlayerName : teamLabel(buzzerTeam)} يجيب الآن
             </p>
-            {isHost && (
-              <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.4)' }}>
-                في انتظار الإجابة...
+            {buzzerPlayerName && (
+              <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                {teamLabel(buzzerTeam)}
               </p>
             )}
+          </div>
+        )}
+
+        {/* Correct answer — show who answered */}
+        {answerLocked && !isAnsweringPhase && answerPlayerName && (
+          <div
+            className="rounded-xl p-3 text-center"
+            style={{ background: 'rgba(0,255,127,0.07)', border: '1.5px solid rgba(0,255,127,0.25)' }}
+          >
+            <p className="text-sm font-bold" style={{ color: '#00FF7F' }}>
+              ✓ {answerPlayerName} أجاب صحيحاً!
+            </p>
           </div>
         )}
 

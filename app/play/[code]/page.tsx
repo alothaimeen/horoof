@@ -61,6 +61,7 @@ export default function PlayPage() {
   const [isHost, setIsHost] = useState(false);
   const myIdRef = useRef('');
   const [buzzerTeam, setBuzzerTeam] = useState<TeamColor | null>(null);
+  const [buzzerPlayerName, setBuzzerPlayerName] = useState<string | null>(null);
   const [openAnswerTeam, setOpenAnswerTeam] = useState<TeamColor | null>(null);
   const [timerMaxSec, setTimerMaxSec] = useState(30);
   const [goldenCell, setGoldenCell] = useState<{ col: number; row: number } | null>(null);
@@ -147,6 +148,7 @@ export default function PlayPage() {
       setAnswerLocked(false);
       setCorrectPlayerName(null);
       setBuzzerTeam(null);
+      setBuzzerPlayerName(null);
       setOpenAnswerTeam(null);
       setOpenRevealStartTime(null);
       setGoldenCell(null);
@@ -228,6 +230,7 @@ export default function PlayPage() {
       setCorrectIndex(null);
       setCorrectPlayerName(null);
       setBuzzerTeam(null);
+      setBuzzerPlayerName(null);
       setOpenAnswerTeam(null);
       setTimerMaxSec(30);
       setOptionRevealTime(data.optionRevealTime ?? null);
@@ -244,6 +247,7 @@ export default function PlayPage() {
     // --- BUZZ CONFIRMED ---
     socket.on('buzz_confirmed', (data: any) => {
       setBuzzerTeam(data.team);
+      setBuzzerPlayerName(data.playerName ?? null);
       if (!data.isTiebreaker) {
         setPhase('ANSWERING');
       }
@@ -257,13 +261,18 @@ export default function PlayPage() {
       SoundEngine.vibrate([300]);
     });
 
-    // --- ANSWER LOCKED (correct answer) ---
+    // --- ANSWER LOCKED (correct answer, or wrong-penalty reveal) ---
     socket.on('answer_locked', (data: any) => {
       setAnswerLocked(true);
       setCorrectIndex(data.correctIndex);
-      setCorrectPlayerName(data.playerName);
-      SoundEngine.play('correct');
-      SoundEngine.vibrate([100]);
+      if (data.isWrongPenalty) {
+        // Wrong buzz → other team gets cell, just reveal correct answer (no correct sound)
+        setCorrectPlayerName(null);
+      } else {
+        setCorrectPlayerName(data.playerName);
+        SoundEngine.play('correct');
+        SoundEngine.vibrate([100]);
+      }
     });
 
     // --- ANSWER WRONG (to submitter only — legacy, kept for compatibility) ---
@@ -311,6 +320,7 @@ export default function PlayPage() {
       if (p === 'BUZZER') {
         // buzz cancelled by host — reset buzzer state
         setBuzzerTeam(null);
+        setBuzzerPlayerName(null);
         setAnswerLocked(false);
         if (et === 0 || !et) setQuestion(prev => prev ? { ...prev, endTime: 0 } : prev);
       }
@@ -319,6 +329,7 @@ export default function PlayPage() {
     // --- HOST: BUZZER CANCELLED ---
     socket.on('buzz_cancelled', () => {
       setBuzzerTeam(null);
+      setBuzzerPlayerName(null);
       setAnswerLocked(false);
       setQuestion(prev => prev ? { ...prev, endTime: 0 } : prev);
     });
@@ -345,6 +356,7 @@ export default function PlayPage() {
       setCorrectIndex(null);
       setCorrectPlayerName(null);
       setBuzzerTeam(null);
+      setBuzzerPlayerName(null);
       setOptionRevealTime(data.optionRevealTime ?? null);
       setBuzzerOpenTime(data.buzzerOpenTime ?? null);
       setTiebreakerEnded(null);
@@ -353,6 +365,7 @@ export default function PlayPage() {
     socket.on('tiebreaker_wrong', () => {
       // Other team gets a chance — remain in TIEBREAKER
       setBuzzerTeam(null);
+      setBuzzerPlayerName(null);
       setAnswerLocked(false);
     });
 
@@ -790,6 +803,8 @@ export default function PlayPage() {
           buzzerOpenTime={buzzerOpenTime}
           mayBuzz={!isHost && myTeam !== null && myTeam !== buzzerTeam && phase !== 'BUZZER_OPEN'}
           isTiebreaker={phase === 'TIEBREAKER'}
+          buzzerPlayerName={buzzerPlayerName}
+          answerPlayerName={correctPlayerName}
           onAnswer={handleSubmitAnswer}
           onBuzzIn={handleBuzzIn}
         />
@@ -815,7 +830,17 @@ export default function PlayPage() {
               <br />
               <span className="text-base font-semibold">يختار أول حرف!</span>
             </p>
-            <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>ستبدأ اللعبة تلقائياً...</p>
+            <button
+              onClick={() => setTiebreakerEnded(null)}
+              className="w-full py-3 rounded-xl font-black text-sm mt-1"
+              style={{
+                background: 'rgba(201,162,39,0.15)',
+                border: '2px solid rgba(201,162,39,0.5)',
+                color: '#C9A227',
+              }}
+            >
+              ✓ تم — ابدأ اللعبة
+            </button>
           </div>
         </div>
       )}
@@ -838,7 +863,7 @@ export default function PlayPage() {
               setPhase('CELL_SELECTION');
               setCurrentTeam(openNoAnswer.currentTeam);
               setQuestion(null); setSelectedCell(null); setCorrectIndex(null); setAnswerLocked(false);
-              setCorrectPlayerName(null); setBuzzerTeam(null); setOpenAnswerTeam(null);
+              setCorrectPlayerName(null); setBuzzerTeam(null); setBuzzerPlayerName(null); setOpenAnswerTeam(null);
               setOpenRevealStartTime(null); setGoldenCell(null); setTimerMaxSec(30);
             }}
           >

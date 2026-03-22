@@ -467,9 +467,6 @@ export function initGameEngine(io: Server) {
       if (game.phase !== 'BUZZER' && game.phase !== 'BUZZER_SECOND_CHANCE') return;
       if (playerId === game.hostPlayerId) return;
 
-      // Don't allow buzzing before options are fully revealed
-      if (game.activeQuestion?.buzzerOpenTime && Date.now() < game.activeQuestion.buzzerOpenTime) return;
-
       const playerTeam: TeamColor | null = game.redTeam.has(playerId) ? 'RED'
         : game.greenTeam.has(playerId) ? 'GREEN' : null;
       if (!playerTeam) return;
@@ -525,32 +522,62 @@ export function initGameEngine(io: Server) {
       const isCorrect = answerIndex === game.activeQuestion.correctIndex;
 
       if (!isCorrect) {
-        // Lock immediately to prevent further submissions from this team
+        // Lock immediately to prevent further submissions
         game.answerLocked = true;
         if (game.questionTimer) { clearTimeout(game.questionTimer); game.questionTimer = null; }
 
         const playerState = game.players.get(playerId);
         if (playerState) playerState.stats.wrong++;
         const otherT = otherTeam(answeringTeam);
-        const otherAlreadyUsed = game.buzzerLockedTeams.has(otherT) || game.phase === 'BUZZER_OPEN';
 
-        if (!otherAlreadyUsed) {
-          // Wrong in ANSWERING — give the other team BUZZER_OPEN (direct answer, 30s)
-          game.phase = 'BUZZER_OPEN';
-          game.answerLocked = false;
-          game.currentQuestionStartTime = Date.now();
-          const openEndTime = Date.now() + BUZZER_OPEN_TOTAL_MS;
-          game.activeQuestion!.endTime = openEndTime;
-          game.questionTimer = setTimeout(() => handleBuzzerOpenTimeout(io, roomCode), BUZZER_OPEN_TOTAL_MS);
-          io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
-          io.to(roomCode).emit('phase_change', {
-            phase: game.phase, currentTeam: game.currentTeam,
-            answeringTeam: otherT, timeLimit: BUZZER_OPEN_MS / 1000, endTime: openEndTime,
+        io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
+
+        if (game.phase === 'ANSWERING' && !game.buzzerLockedTeams.has(otherT)) {
+          // First buzz was wrong → award cell to the other team immediately
+          const { col, row } = game.selectedCell!;
+          const ck = cellKey(col, row);
+          const isGolden = game.goldenCellKey === ck;
+          const cell = game.grid.get(ck);
+          if (cell) {
+            cell.owner = otherT;
+            if (isGolden) cell.isGolden = true;
+          }
+          game.gridVersion++;
+          io.to(roomCode).emit('answer_locked', {
+            correctPlayerId: null, playerName: '', col, row,
+            correctIndex: game.activeQuestion!.correctIndex, isWrongPenalty: true,
           });
+          io.to(roomCode).emit('cell_claimed', { col, row, owner: otherT, gridVersion: game.gridVersion, isGolden });
+          game.phase = 'ANSWER_REVEAL';
+
+          setTimeout(() => {
+            const g = activeGames.get(roomCode);
+            if (!g) return;
+            if (checkWin(g.grid, otherT)) {
+              g.winningPath = getWinningPath(g.grid, otherT);
+              g.roundWins[otherT]++;
+              if (g.roundWins[otherT] >= ROUNDS_TO_WIN) {
+                g.phase = 'GAME_OVER';
+                io.to(roomCode).emit('game_over', { winner: otherT, roundWins: g.roundWins, winningPath: g.winningPath, leaderboard: buildLeaderboard(g) });
+              } else {
+                g.phase = 'ROUND_OVER';
+                io.to(roomCode).emit('round_over', { winner: otherT, roundWins: g.roundWins, winningPath: g.winningPath, leaderboard: buildLeaderboard(g) });
+              }
+            } else {
+              g.currentTeam = otherT;
+              g.lastCellWinner = otherT;
+              g.phase = 'CELL_SELECTION';
+              g.selectedCell = null;
+              g.activeQuestion = null;
+              g.buzzerTeam = null;
+              g.buzzerPlayerId = null;
+              g.buzzerLockedTeams = new Set();
+              io.to(roomCode).emit('phase_change', { phase: g.phase, currentTeam: g.currentTeam });
+            }
+          }, ANSWER_REVEAL_MS);
         } else {
-          // Both teams have had their chance — release cell and change turn
-          io.to(roomCode).emit('answer_wrong_team', { wrongTeam: answeringTeam, playerName: playerState?.name ?? '' });
-          releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion.correctIndex);
+          // BUZZER_OPEN wrong, or second-chance buzz wrong → release cell
+          releaseCellAndChangeTurn(io, roomCode, game, game.activeQuestion!.correctIndex);
         }
         return;
       }
